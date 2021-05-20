@@ -105,3 +105,4 @@ xyplot(my_data$`AVG.Survival` ~ my_data$Date,
        type = "l", 
        xlab="Date", 
        ylab="Survival (average % survival)")
+
