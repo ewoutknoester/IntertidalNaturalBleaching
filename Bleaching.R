@@ -128,6 +128,6 @@ test$aic
 
 Model <- glmer(LOG10.Bleaching~Treatment+Date_days + (1|Structure), data=my_data, family = gaussian(link = "log"))
 print(summary(Model),correlation=FALSE)
-plot(Model2)
+plot(Model)
 qqnorm(resid(Model))
 

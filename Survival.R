@@ -110,6 +110,6 @@ test$aic
 
 Model <- glmer(Survival~Treatment+Date_days + (1|Structure), family=gaussian, data=my_data)
 print(summary(Model),correlation=FALSE)
-plot(Model2)
+plot(Model)
 qqnorm(resid(Model))
 

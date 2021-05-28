@@ -8,6 +8,7 @@ library("lme4")
 library("fitdistrplus")
 library("lmerTest")
 library("car")
+library("olsrr")
 
 # loading xls files
 my_data <- read_excel("ImageJ_R.xlsx", sheet = 1)
@@ -40,6 +41,9 @@ my_data <- as.tbl(my_data) %>%
   group_by(Structure, Treatment, Date_days) %>% 
   summarise_all(c("mean"))
 
+# remove data point that is likely wrong
+my_data <- my_data[-c(27),] 
+
 # write.csv(my_data,"test.csv", row.names = FALSE)
 
 ## check repeated measures ANOVA requirements
@@ -67,7 +71,19 @@ fligner.test(my_data$Survival, my_data$Treatment)
 # Testing for sphericity
 # Mauchly's Test for Sphericity!
 
-# Testing which distribution fits the data best
+# not normal -> sqrt transformation: does not work
+#my_data <- transform(my_data, `SQRT.Survival`= sqrt(Survival))
+#ggqqplot(my_data, x = "SQRT.Survival")
+#hist(my_data$SQRT.Survival)
+#shapiro_test(my_data$SQRT.Survival)
+
+# not normal -> log10 transformation: does not work at all
+#my_data <- transform(my_data, LOG10.Survival= log(Survival))
+#ggqqplot(my_data, x = "LOG10.Survival")
+#hist(my_data$LOG10.Survival)
+#shapiro_test(my_data$LOG10.Survival)
+
+## Testing which distribution fits the data best
 
 test <- fitdist(my_data$Survival, "norm")
 plot(test)
@@ -109,12 +125,15 @@ test <- fitdist(my_data$Survival, "logis")
 plot(test)
 test$aic
 
-# A beta distribution fits best, so this will be used in the model
-
 # Generalized Linear Mixed Model with Repeated Measures
 
-Model <- glmer(Survival~Treatment+Date_days + (1|Structure), family=gaussian, data=my_data)
+Model <- lm(Survival~Treatment+Date_days, data=my_data)
 print(summary(Model),correlation=FALSE)
-plot(Model2)
+plot(Model)
 qqnorm(resid(Model))
+
+cooksd <- cooks.distance(Model)
+plot(cooksd, pch="*", cex=2, main="Influential Obs by Cooks distance")  # plot cook's distance
+abline(h = 1, col="red")  # add cutoff line
+text(x=1:length(cooksd)+1, y=cooksd, labels=ifelse(cooksd>1, names(cooksd),""), col="red")  # add labels
 

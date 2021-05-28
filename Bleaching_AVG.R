@@ -40,7 +40,18 @@ my_data <- as.tbl(my_data) %>%
   group_by(Structure, Treatment, Date_days) %>% 
   summarise_all(c("mean"))
 
+# remove data point that is likely wrong
+my_data <- my_data[-c(27),] 
+
 # write.csv(my_data,"test.csv", row.names = FALSE)
+
+
+# scatter plot
+#reg1 <- lm(write~read,data=hsb2) 
+#summary(reg1)
+#with(hsb2,plot(read, write))
+#abline(reg1)
+
 
 ## check repeated measures ANOVA requirements
 
@@ -84,55 +95,59 @@ fligner.test(my_data$Bleaching, my_data$Treatment)
 # Mauchly's Test for Sphericity!
 
 
-# Testing which distribution fits the data best
+## Testing which distribution fits the data best
 
-test <- fitdist(my_data$Bleaching, "norm")
+#test <- fitdist(my_data$Survival, "norm")
 #plot(test)
-test$aic
+#test$aic
 
-test <- fitdist(my_data$Bleaching, "lnorm")
-plot(test)
-test$aic
-#This one works best!
-
-test <- fitdist(my_data$Bleaching, "pois")
+#test <- fitdist(my_data$Survival, "lnorm")
 #plot(test)
-test$aic
+#test$aic
 
-test <- fitdist(my_data$Bleaching, "exp")
+#test <- fitdist(my_data$Survival, "pois")
 #plot(test)
-test$aic
+#test$aic
 
-test <- fitdist(my_data$Bleaching, "gamma")
+#test <- fitdist(my_data$Survival, "exp")
 #plot(test)
-test$aic
+#test$aic
 
-test <- fitdist(my_data$Bleaching, "nbinom")
+#test <- fitdist(my_data$Survival, "gamma")
 #plot(test)
-test$aic
+#test$aic
 
-test <- fitdist(my_data$Bleaching, "geom")
+#test <- fitdist(my_data$Survival, "nbinom")
 #plot(test)
-test$aic
+#test$aic
 
-test <- fitdist(my_data$Bleaching, "beta")
+#test <- fitdist(my_data$Survival, "geom")
 #plot(test)
-test$aic
+#test$aic
 
-test <- fitdist(my_data$Bleaching, "unif")
+#test <- fitdist((my_data$Survival/100), "beta", method = "mme")
 #plot(test)
-test$aic
+#test$aic
 
-test <- fitdist(my_data$Bleaching, "logis")
+#test <- fitdist(my_data$Survival, "unif")
 #plot(test)
-test$aic
+#test$aic
+
+#test <- fitdist(my_data$Survival, "logis")
+#plot(test)
+#test$aic
 
 # A lognormal distribution fits best, so this will be used in the model
 
 # Generalized Linear Mixed Model with Repeated Measures
 
-Model <- glmer(LOG10.Bleaching~Treatment+Date_days + (1|Structure), data=my_data, family = gaussian(link = "log"))
+Model <- lm(LOG10.Bleaching~Treatment+Date_days, data=my_data)
 print(summary(Model),correlation=FALSE)
-plot(Model2)
+plot(Model)
 qqnorm(resid(Model))
+
+cooksd <- cooks.distance(Model)
+plot(cooksd, pch="*", cex=2, main="Influential Obs by Cooks distance")  # plot cook's distance
+abline(h = 1, col="red")  # add cutoff line
+text(x=1:length(cooksd)+1, y=cooksd, labels=ifelse(cooksd>1, names(cooksd),""), col="red")  # add labels
 
