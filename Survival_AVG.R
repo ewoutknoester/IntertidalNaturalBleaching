@@ -8,7 +8,7 @@ library("lme4")
 library("fitdistrplus")
 library("lmerTest")
 library("car")
-library("olsrr")
+#library("olsrr")
 
 # loading xls files
 my_data <- read_excel("ImageJ_R.xlsx", sheet = 1)
@@ -27,6 +27,9 @@ my_data <- my_data[c(1,2,4,17)]
 startdate <- as.Date("2020-02-07","%Y-%m-%d")
 my_data$Date_days <- as.numeric(difftime(my_data$Date,startdate ,units="days"), units="days")
 
+# removing 07/02 and 11/05 because of inaccurate measurements
+my_data<-my_data[!(my_data$Date_days=="0" | my_data$Date_days=="94"),]
+
 # change headers of column survival
 my_data = my_data %>% 
   rename(
@@ -36,20 +39,19 @@ my_data = my_data %>%
 # removing rows containing NAs (so the rows that don't contain the average values for survival)
 my_data <- na.omit(my_data)
 
+# Make treatment and days factors
+my_data$Treatment <- as.factor(my_data$Treatment)
+class(my_data$Treatment)
+my_data$Date_days <- as.factor(my_data$Date_days)
+class(my_data$Date_days)
+
+# creating an average value per structure per date
 my_data <- as.tbl(my_data) %>% 
   bind_rows(my_data) %>% 
   group_by(Structure, Treatment, Date_days) %>% 
   summarise_all(c("mean"))
 
-# remove data point that is likely wrong
-my_data <- my_data[-c(27),] 
-
-# write.csv(my_data,"test.csv", row.names = FALSE)
-
-## check repeated measures ANOVA requirements
-
 # visualising data with box plots
-
 boxplot(my_data$`Survival` ~ my_data$Date,
         data=my_data, 
         main="Survival", 
@@ -58,82 +60,38 @@ boxplot(my_data$`Survival` ~ my_data$Date,
 
 # normality tests
 ggqqplot(my_data, x = "Survival")
-
 hist(my_data$Survival)
-
 shapiro_test(my_data$Survival)
 
 # Testing for homogeneity of variances
 leveneTest(my_data$Survival, my_data$Treatment)
 fligner.test(my_data$Survival, my_data$Treatment)
-# Variances are NOT homogeneous
 
 # Testing for sphericity
 # Mauchly's Test for Sphericity!
 
-# not normal -> sqrt transformation: does not work
-#my_data <- transform(my_data, `SQRT.Survival`= sqrt(Survival))
-#ggqqplot(my_data, x = "SQRT.Survival")
-#hist(my_data$SQRT.Survival)
-#shapiro_test(my_data$SQRT.Survival)
+# data is not normal -> mirroring
+my_data <- transform(my_data, Mirrored.Survival = 100-Survival)
+ggqqplot(my_data, x = "Mirrored.Survival")
+hist(my_data$Mirrored.Survival)
+shapiro_test(my_data$Mirrored.Survival)
 
-# not normal -> log10 transformation: does not work at all
-#my_data <- transform(my_data, LOG10.Survival= log(Survival))
-#ggqqplot(my_data, x = "LOG10.Survival")
-#hist(my_data$LOG10.Survival)
-#shapiro_test(my_data$LOG10.Survival)
+# still not normal -> sqrt transformation: works somewhat
+my_data <- transform(my_data, Mirrored.SQRT.Survival = sqrt(Mirrored.Survival))
+ggqqplot(my_data, x = "Mirrored.SQRT.Survival")
+hist(my_data$Mirrored.SQRT.Survival)
+shapiro_test(my_data$Mirrored.SQRT.Survival)
 
-## Testing which distribution fits the data best
+# still not normal -> log10 transformation: works a bit less
+#my_data <- transform(my_data, Mirrored.LOG10.Survival= log(Mirrored.Survival))
+#ggqqplot(my_data, x = "Mirrored.LOG10.Survival")
+#hist(my_data$Mirrored.LOG10.Survival)
+#shapiro_test(my_data$Mirrored.LOG10.Survival)
 
-test <- fitdist(my_data$Survival, "norm")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "lnorm")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "pois")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "exp")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "gamma")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "nbinom")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "geom")
-plot(test)
-test$aic
-
-test <- fitdist((my_data$Survival/100), "beta", method = "mme")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "unif")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "logis")
-plot(test)
-test$aic
-
-# Generalized Linear Mixed Model with Repeated Measures
-
-Model <- lm(Survival~Treatment+Date_days, data=my_data)
+# Linear Model with Repeated Measures (using Mirrored.SQRT.Survival)
+Model <- lm(Mirrored.SQRT.Survival~Treatment*Date_days, data=my_data)
 print(summary(Model),correlation=FALSE)
 plot(Model)
+plot(my_data$Survival, Model$fitted)
 qqnorm(resid(Model))
-
-cooksd <- cooks.distance(Model)
-plot(cooksd, pch="*", cex=2, main="Influential Obs by Cooks distance")  # plot cook's distance
-abline(h = 1, col="red")  # add cutoff line
-text(x=1:length(cooksd)+1, y=cooksd, labels=ifelse(cooksd>1, names(cooksd),""), col="red")  # add labels
 

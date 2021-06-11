@@ -26,6 +26,9 @@ my_data <- my_data[c(1,2,4,17)]
 startdate <- as.Date("2020-02-07","%Y-%m-%d")
 my_data$Date_days <- as.numeric(difftime(my_data$Date,startdate ,units="days"), units="days")
 
+# removing 07/02 and 11/05 because of inaccurate measurements
+my_data<-my_data[!(my_data$Date_days=="0" | my_data$Date_days=="94"),]
+
 # change headers of column survival
 my_data = my_data %>% 
   rename(
@@ -35,9 +38,11 @@ my_data = my_data %>%
 # removing rows containing NAs (so the rows that don't contain the average values for survival)
 my_data <- na.omit(my_data)
 
-# write.csv(my_data,"test.csv", row.names = FALSE)
-
-## check repeated measures ANOVA requirements
+# Make treatment and days factors
+my_data$Treatment <- as.factor(my_data$Treatment)
+class(my_data$Treatment)
+my_data$Date_days <- as.factor(my_data$Date_days)
+class(my_data$Date_days)
 
 # visualising data with box plots
 
@@ -49,9 +54,7 @@ boxplot(my_data$`Survival` ~ my_data$Date,
 
 # normality tests
 ggqqplot(my_data, x = "Survival")
-
 hist(my_data$Survival)
-
 shapiro_test(my_data$Survival)
 
 # Testing for homogeneity of variances
@@ -62,52 +65,7 @@ fligner.test(my_data$Survival, my_data$Treatment)
 # Testing for sphericity
 # Mauchly's Test for Sphericity!
 
-# Testing which distribution fits the data best
-
-test <- fitdist(my_data$Survival, "norm")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "lnorm")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "pois")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "exp")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "gamma")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "nbinom")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "geom")
-plot(test)
-test$aic
-
-test <- fitdist((my_data$Survival/100), "beta", method = "mme")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "unif")
-plot(test)
-test$aic
-
-test <- fitdist(my_data$Survival, "logis")
-plot(test)
-test$aic
-
-# A beta distribution fits best, so this will be used in the model
-
 # Generalized Linear Mixed Model with Repeated Measures
-
 Model <- glmer(Survival~Treatment+Date_days + (1|Structure), family=gaussian, data=my_data)
 print(summary(Model),correlation=FALSE)
 plot(Model)
