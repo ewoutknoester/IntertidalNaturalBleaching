@@ -1,3 +1,7 @@
+# Setup
+rm(list=ls()) # Clear workspace
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) #Set directory at current (make sure file is saved locally)
+
 # loading libraries
 library("readxl")
 library("tidyverse")
@@ -12,7 +16,7 @@ library("car")
 # loading xls files
 my_data <- read_excel("ImageJ_R.xlsx", sheet = 1)
 
-# combining relevant sheets of excel file
+# combining relevant sheets of excel file (each structure had it's own sheet)
 for (i in 2:36) {
   temp <- read_excel("ImageJ_R.xlsx", sheet = i)
   my_data <- rbind(my_data, temp)

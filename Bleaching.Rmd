@@ -1,0 +1,382 @@
+---
+title: "Bleaching"
+author: "Kyra Pikaar & Ewout Knoester"
+date: "12 June 2021"
+output: html_document
+---
+
+# Setup and data import
+```{r setup, inclue = "FALSE", message = "FALSE"}
+
+rm(list=ls()) # Clear workspace
+
+library(rstudioapi) # setwd
+library("readxl")
+library("tidyverse")
+library("lattice")
+library("rstatix")
+library("ggpubr")
+library("lme4")
+library("fitdistrplus")
+library("lmerTest")
+library("car")
+library(nlme) # mixed models allowing for heterogeneity
+#library(agricolae) # add significanse levels to plot
+library(multcomp) # add significanse levels to plot
+library(emmeans) # Pairwise comparisons
+library(stringr) # remove spaces
+
+# MAKE SURE FILE IS SAVED BEFORE RUNNING THIS CODE:
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) #Set directory at current (make sure file is saved)
+# If you get error: save all files, reopen the project and re-run the code
+
+# load first xls sheet
+my_data.raw <- read_excel("ImageJ_R.xlsx", sheet = 1)
+
+# combining next sheets of excel file (each structure had its own sheet)
+for (i in 2:36) {
+  temp <- read_excel("ImageJ_R.xlsx", sheet = i)
+  my_data.raw <- rbind(my_data.raw, temp)
+}
+
+# Function to facilitate averaging a dataset
+data_summary <- function(data, varname, groupnames){
+  require(plyr)
+  summary_func <- function(x, col){
+    c(mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE),
+      n  = length(x[[col]]),
+      se = sd(x[[col]], na.rm=TRUE)/sqrt(length(x)))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- rename(data_sum, c("mean" = varname))
+ return(data_sum)
+}
+```
+
+# Data preparation
+```{r all fragments: data prep, inclue = "FALSE", message = "FALSE"}
+
+# check missing data: much more frags missing in the subtidal
+#my_data.raw %>%
+#  group_by(Treatment) %>%
+#  summarize(Sum_Missing = sum(`Cause of death` == "Missing", na.rm=TRUE))
+
+# removing unnecessary columns
+my_data.B <- my_data.raw[c(1,2,4,13)]
+
+# turn dates into number of days from start (07/02/2020)
+startdate <- as.Date("2020-02-07","%Y-%m-%d")
+my_data.B$Date_days <- as.numeric(difftime(my_data.B$Date, startdate, units="days"), units="days")
+
+# change headers of column bleaching
+my_data.B = my_data.B %>% rename(Bleaching = `Adjusted brightness (0 - 255)`)
+
+# Make treatment and days factors
+my_data.B$Treatment <- as.factor(my_data.B$Treatment)
+my_data.B$Date_days <- as.factor(my_data.B$Date_days)
+
+# removing 07/02 and 11/05 because of inaccurate measurements
+my_data.B1 <- my_data.B[!(my_data.B$Date_days == "0" | my_data.B$Date_days == "94"),]
+
+# get insight into NAs
+my_data.B1 %>%
+  group_by(Treatment) %>%
+  summarize(Sum_NA = sum(is.na(Bleaching)))
+
+# removing rows containing NAs, thereby excluding Missing or Dead fragments
+my_data.B2 <- na.omit(my_data.B1)
+```
+# Analysis
+## All fragments
+### Data exploration
+```{r all fragments: data exp}
+
+# visualizing data with box plots: heterogeineity likely over Date and Treatment
+boxplot(Bleaching ~ Date, data = my_data.B2, main="Bleaching", xlab="Date", ylab="Bleaching")
+boxplot(Bleaching ~ Treatment, data = my_data.B2, main="Bleaching", xlab="Treatment", ylab="Bleaching")
+
+# normality tests: response data is right-skewed
+ggqqplot(my_data.B2, x = "Bleaching")
+hist(my_data.B2$Bleaching)
+shapiro_test(my_data.B2$Bleaching)
+
+# visualizing log10(response) data with box plots: still heterogeineity likely over Date and Treatment
+boxplot(log10(Bleaching)~Date, data = my_data.B2, main="log10.Bleaching", xlab="Date", ylab="Bleaching")
+boxplot(log10(Bleaching)~Treatment, data = my_data.B2, main="log10.Bleaching", xlab="Treatment", ylab="Bleaching")
+
+# normality test of log10(response): data looks normal
+hist(log10(my_data.B2$Bleaching))
+
+# Testing for homogeneity of variances
+# leveneTest(my_data$Bleaching, my_data$Treatment)
+# fligner.test(my_data$Bleaching, my_data$Treatment)
+# Variances are NOT homogeneous
+# Testing for sphericity
+# Mauchly's Test for Sphericity!
+```
+### Model selection
+```{r all fragments: model selex}
+# Full model with random structure for Structure and Date (using structure ID)
+Model.all.log  <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.B2)
+
+# Full model allowing heterogeneity
+Model.all.log2 <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.B2,
+                      weights = varIdent(form = ~1 | Date_days))
+Model.all.log3 <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.B2,
+                      weights = varIdent(form = ~1 | Treatment))
+lmc <- lmeControl(niterEM = 5200, msMaxIter = 5200) # more iterations to reach convergence
+Model.all.log4 <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.B2,
+                      weights = varIdent(form = ~1 | Treatment*Date_days), control = lmc)
+
+# Allowing Treatment*Date_days heterogeineity best choice, despite increase in df:
+AIC(Model.all.log, Model.all.log2, Model.all.log3, Model.all.log4)
+
+anova(Model.all.log4) # Interaction highly significant: final model
+summary(Model.all.log4)
+```
+### Model validation
+```{r all fragments: model val}
+
+mod <- Model.all.log4 # set model to be validated
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(my_data.B2$Date_days, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(my_data.B2$Treatment, resid(mod, type = "pearson")) # residuals split over Treatment
+abline(0,0)
+plot(fitted(mod) ~ log10(my_data.B2$Bleaching)) # response (log) data vs fitted (log)
+par(op)
+
+```
+### Post hoc and plots
+```{r}
+
+colours = c("#CD4902", "#FFC84B", "#46E2FF", "#0060DE") # set colours for the Treatments
+
+# Treatment|Date plot
+# Get average values, SD and SE of Bleaching split per Date and Treatment
+sum.all.log4 <- data_summary(my_data.B2, varname = "Bleaching", groupnames = c("Date_days", "Treatment"))
+# Create unique Finder (Date:Treatment) to sort data
+sum.all.log4 <- as.data.frame(append(sum.all.log4,
+    list(Finder = paste(sum.all.log4$Date_days, sum.all.log4$Treatment, sep=":")), after = 0))
+# Create ID (matching order of the Finder)
+sum.all.log4 <- tibble::rownames_to_column(sum.all.log4, "ID") # create ID from rownames
+
+# Perform post hoc and get significance letters (Compact Letter Display) between Treatments within each Date
+ph.all.log4 <- emmeans(Model.all.log4, specs = pairwise ~ Treatment|Date_days, adjust = "tukey", type = "response")
+#ph.all.log4$contrasts # Show the contrasts
+letters.all.log4 <- multcomp::cld(ph.all.log4$emmeans, alpha = 0.05, Letters = letters) # get CLD
+
+# Create ID and order dataframe by ID (matching sum dataframe)
+letters.all.log4 <- tibble::rownames_to_column(letters.all.log4, "ID") # Create ID from rownames
+letters.all.log4 <- letters.all.log4[order(as.numeric(letters.all.log4$ID)),] # order by ID
+letters.all.log4 <- letters.all.log4 %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+# Merge sig.letter dataframe into the summary dataframe
+sum.all.log4 <- cbind(sum.all.log4, siglet = letters.all.log4$.group)
+
+# Plot Treatment|Date + error bars + letters
+ggplot(sum.all.log4, aes(x = Date_days, fill = Treatment, y = Bleaching))+
+  geom_col(stat = "identity", position = position_dodge(0.7), width = 0.7)+ ylim(0,180)+
+  labs(y = "Colour intensity", x = "Days")+
+  geom_errorbar(aes(ymin=Bleaching-(se), ymax=Bleaching+(se)), width=.2, position=position_dodge(.7))+
+  geom_text(data = sum.all.log4, aes(x=Date_days, y = Bleaching + se, label = siglet, vjust = -0.8), 
+                position=position_dodge(.7), size = 3.5)+
+  theme(aspect.ratio=1/4)+ scale_fill_manual(values=colours)
+ggsave("Bleaching(ALL)_interaction.png", width = 23, height = 10, units = "cm")
+
+# Line plot
+# Transform date from factor to continuous variable
+sum.all.log4.line <- sum.all.log4
+sum.all.log4.line$Date_days <- as.numeric(as.character(sum.all.log4.line$Date_days))
+
+ggplot(data=sum.all.log4.line, aes(Date_days, y=Bleaching, fill = Treatment)) + ylim(40,165)+
+  geom_line(size = 1, linetype = "dashed", aes(color=Treatment))+scale_color_manual(values=colours)+ 
+  geom_point(size = 3, aes(color=Treatment))+scale_color_manual(values=colours)+
+  geom_errorbar(aes(ymin=Bleaching-(se), ymax=Bleaching+(se), color = Treatment), width=.9)+
+  geom_text(data = sum.all.log4.line, aes(x=Date_days, y = Bleaching + se, label = siglet, vjust = -0.8), 
+                size = 3.5)
+ggsave("Bleaching(ALL)_interaction_line.png", width = 23, height = 10, units = "cm")
+
+# Treatment plot
+# Get averages and create ID
+sum.all.log4.T <- data_summary(my_data.B2, varname = "Bleaching", groupnames = c("Treatment"))
+sum.all.log4.T  <- tibble::rownames_to_column(sum.all.log4.T, "ID")
+
+# Perform Tukey to get significance letters
+ph.all.log4.T <- emmeans(Model.all.log4, specs = pairwise ~ Treatment, adjust = "tukey", type = "response")
+ph.all.log4.T$contrasts
+letters.all.log4.T <- multcomp::cld(ph.all.log4.T$emmeans, alpha = 0.05, Letters = letters)
+letters.all.log4.T <- letters.all.log4.T %>% mutate(.group = str_squish(.group))
+
+# Create ID and order dataframe by name (equals Finder of sgr.summary.SST dataframe)
+letters.all.log4.T <- letters.all.log4.T[order(as.character(letters.all.log4.T$Treatment)),]
+
+# Merge sig.letter dataframe into the summary dataframe
+sum.all.log4.T <- cbind(sum.all.log4.T, siglet = letters.all.log4.T$.group)
+sum.all.log4.T <- sum.all.log4.T[order(as.numeric(sum.all.log4.T$ID)),]
+
+# Plot Treatment bar graph + error bars + letters
+ggplot(sum.all.log4.T, aes(x = Treatment, y = Bleaching))+
+  geom_col(stat = "identity", position = position_dodge(),
+           fill = colours)+ labs(y = "Average colour intensity")+
+  geom_errorbar(aes(ymin=Bleaching-(se), ymax=Bleaching+(se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = sum.all.log4.T, aes(x=Treatment, y = Bleaching + se*1.4, label = siglet), vjust=0,
+                position=position_dodge(.9))+
+  theme_light()
+ggsave("Bleaching(ALL)_treatment.png", width = 23, height = 10, units = "cm")
+
+```
+
+## Averages
+### Data preparation
+```{r averages: data prep, inclue = "FALSE", message = "FALSE"}
+
+# creating an average value per structure per date
+my_data.avg <- tibble::as_tibble(my_data.B2) %>% 
+  bind_rows(my_data.B2) %>% 
+  group_by(Structure, Treatment, Date_days) %>% 
+  summarise_all(c("mean"))
+```
+### Data exploration
+```{r all fragments: data exp}
+
+# visualizing data with box plots: heterogeineity likely over Date and Treatment
+boxplot(Bleaching ~ Date, data = my_data.avg, main="Bleaching", xlab="Date", ylab="Bleaching")
+boxplot(Bleaching ~ Treatment, data = my_data.avg, main="Bleaching", xlab="Treatment", ylab="Bleaching")
+
+# normality tests: data is right-skewed
+ggqqplot(my_data.avg, x = "Bleaching")
+hist(my_data.avg$Bleaching)
+shapiro_test(my_data.avg$Bleaching)
+
+# visualizing data with box plots: less, but still heterogeineity likely over Date and Treatment
+boxplot(log10(Bleaching) ~ Date, data = my_data.avg, main="Bleaching", xlab="Date", ylab="Bleaching")
+boxplot(log10(Bleaching) ~ Treatment, data = my_data.avg, main="Bleaching", xlab="Treatment", ylab="Bleaching")
+hist(log10(my_data.avg$Bleaching))
+```
+### Model selection
+```{r all fragments: model selex}
+# Full model with random structure for Date
+Model.avg.log  <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.avg)
+
+# Full model allowing heterogeneity
+Model.avg.log2 <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.avg,
+                      weights = varIdent(form = ~1 | Date_days))
+Model.avg.log3 <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.avg,
+                      weights = varIdent(form = ~1 | Treatment))
+
+# Allowing Treatment*Date_days heterogeineity best choice:
+AIC(Model.avg.log, Model.avg.log2, Model.avg.log3) #log2 best model
+
+anova(Model.avg.log2) # Interaction highly significant: final model
+summary(Model.avg.log2)
+```
+### Model validation
+```{r all fragments: model val}
+
+mod <- Model.avg.log2
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2))
+plot(resid(mod, type = "pearson") ~ fitted(mod))
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "")
+qqnorm(resid(mod, type = "pearson"))
+plot(my_data.avg$Date_days, resid(mod, type = "pearson"))
+abline(0,0)
+plot(my_data.avg$Treatment, resid(mod, type = "pearson"))
+abline(0,0)
+plot(fitted(mod) ~ log10(my_data.avg$Bleaching))
+par(op)
+```
+### Post hoc and plots
+```{r}
+
+colours = c("#CD4902", "#FFC84B", "#46E2FF", "#0060DE") # set colours for the Treatments
+
+# Date_days*Treatment plot
+# Get averages
+sum.avg.log2 <- data_summary(my_data.avg, varname = "Bleaching", groupnames = c("Date_days", "Treatment"))
+# Create unique Finder
+sum.avg.log2 <- as.data.frame(append(sum.avg.log2,
+    list(Finder = paste(sum.avg.log2$Date_days, sum.avg.log2$Treatment, sep=":")), after = 0))
+# Create ID and order dataframe by name of Finder
+sum.avg.log2 <- tibble::rownames_to_column(sum.avg.log2, "ID")
+sum.avg.log2 <- sum.avg.log2[order(as.numeric(sum.avg.log2$ID)),]
+
+# Perform post hoc to get significance letters
+ph.avg.log2 <- emmeans(Model.avg.log2, specs = pairwise ~ Treatment|Date_days, adjust = "tukey", type = "response")
+#ph.all.log4$contrasts
+letters.avg.log2 <- multcomp::cld(ph.avg.log2$emmeans, alpha = 0.05, Letters = letters)
+
+# Create ID and order dataframe by name (equals Finder of sgr.summary.SST dataframe)
+letters.avg.log2 <- tibble::rownames_to_column(letters.avg.log2, "Group")
+letters.avg.log2 <- letters.avg.log2[order(as.numeric(letters.avg.log2$Group)),]
+letters.avg.log2 <- letters.avg.log2 %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+# Merge sig.letter dataframe into the summary dataframe
+sum.avg.log2 <- cbind(sum.avg.log2, siglet = letters.avg.log2$.group)
+sum.avg.log2 <- sum.avg.log2[order(as.numeric(sum.avg.log2$ID)),]
+
+# Plot Date_days*Treatment bar graph + error bars + letters
+ggplot(sum.avg.log2, aes(x = Date_days, fill = Treatment, y = Bleaching))+
+  geom_col(stat = "identity", position = position_dodge(0.7), width = 0.7)+ ylim(0,180)+
+  labs(y = "Colour intensity", x = "Days")+
+  geom_errorbar(aes(ymin=Bleaching-(se), ymax=Bleaching+(se)), width=.2, position=position_dodge(.7))+
+  geom_text(data = sum.avg.log2, aes(x=Date_days, y = Bleaching + se, label = siglet, vjust = -0.8), 
+                position=position_dodge(.7), size = 3.5)+
+  theme(aspect.ratio=1/4)+ scale_fill_manual(values=colours)
+ggsave("Bleaching(AVG)_interaction.png", width = 23, height = 10, units = "cm")
+
+# Line plot
+sum.avg.log2.line <- sum.avg.log2
+sum.avg.log2.line$Date_days <- as.numeric(as.character(sum.avg.log2.line$Date_days))
+
+ggplot(data=sum.avg.log2.line, aes(Date_days, y=Bleaching, fill = Treatment)) + ylim(40,160)+
+  geom_line(size = 1, linetype = "dashed", aes(color=Treatment))+scale_color_manual(values=colours)+ 
+  geom_point(size = 3, aes(color=Treatment))+scale_color_manual(values=colours)+
+  geom_errorbar(aes(ymin=Bleaching-(se), ymax=Bleaching+(se), color = Treatment), width=.9)+
+  geom_text(data = sum.avg.log2.line, aes(x=Date_days, y = Bleaching + se, label = siglet, vjust = -0.8), 
+                size = 3.5)
+ggsave("Bleaching(AVG)_interaction_line.png", width = 23, height = 10, units = "cm")
+
+# Treatment plot
+# Get averages
+sum.avg.log2.T <- data_summary(my_data.avg, varname = "Bleaching", groupnames = c("Treatment"))
+# Create ID and order dataframe 
+sum.avg.log2.T  <- tibble::rownames_to_column(sum.avg.log2.T, "ID")
+sum.avg.log2.T  <- sum.avg.log2.T [order(as.character(sum.avg.log2.T$Treatment)),]
+
+# Perform Tukey to get significance letters
+ph.avg.log2.T <- emmeans(Model.avg.log2, specs = pairwise ~ Treatment, adjust = "tukey", type = "response")
+ph.avg.log2.T$contrasts
+letters.avg.log2.T <- multcomp::cld(ph.avg.log2.T$emmeans, alpha = 0.05, Letters = letters)
+letters.avg.log2.T <- letters.avg.log2.T %>% mutate(.group = str_squish(.group))
+
+# Create ID and order dataframe by name (equals Finder of sgr.summary.SST dataframe)
+letters.avg.log2.T <- letters.avg.log2.T[order(as.character(letters.avg.log2.T$Treatment)),]
+
+# Merge sig.letter dataframe into the summary dataframe
+sum.avg.log2.T <- cbind(sum.avg.log2.T, siglet = letters.avg.log2.T$.group)
+sum.avg.log2.T <- sum.avg.log2.T[order(as.numeric(sum.avg.log2.T$ID)),]
+
+# Plot Treatment bar graph + error bars + letters
+ggplot(sum.avg.log2.T, aes(x = Treatment, y = Bleaching))+
+  geom_col(stat = "identity", position = position_dodge(),
+           fill = colours)+ labs(y = "Average colour intensity")+
+  geom_errorbar(aes(ymin=Bleaching-(se), ymax=Bleaching+(se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = sum.avg.log2.T, aes(x=Treatment, y = Bleaching + se*1.4, label = siglet), vjust=0,
+                position=position_dodge(.9))+
+  theme_light()
+ggsave("Bleaching(AVG)_treatment.png", width = 23, height = 10, units = "cm")
+
+
+
+```
+
+
+

@@ -1,0 +1,191 @@
+---
+title: "Survival"
+author: "Kyra Pikaar & Ewout Knoester"
+date: "13 June 2021"
+output: html_document
+---
+
+
+# Setup and data import
+```{r setup, include = "FALSE", message = "FALSE"}
+
+rm(list=ls()) # Clear workspace
+
+library(rstudioapi) # setwd
+library("readxl")
+library("tidyverse")
+library("lattice")
+library("rstatix")
+library("ggpubr")
+library("lme4")
+library("fitdistrplus")
+library("lmerTest")
+library("car")
+library(nlme) # mixed models allowing for heterogeneity
+library(multcomp) # add significanse levels to plot
+library(emmeans) # Pairwise comparisons
+library(stringr) # remove spaces
+
+# MAKE SURE FILE IS SAVED BEFORE RUNNING THIS CODE:
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) #Set directory at current (make sure file is saved)
+# If you get error: save all files, reopen the project and re-run the code
+
+# load first xls sheet
+survival.raw <- read_excel("ImageJ_R.xlsx", sheet = 1)
+
+# combining next sheets of excel file (each structure had its own sheet)
+for (i in 2:36) {
+  temp <- read_excel("ImageJ_R.xlsx", sheet = i)
+  survival.raw <- rbind(survival.raw, temp)
+}
+
+# Function to facilitate averaging a dataset
+data_summary <- function(data, varname, groupnames){
+  require(plyr)
+  summary_func <- function(x, col){
+    c(mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE),
+      n  = length(x[[col]]),
+      se = sd(x[[col]], na.rm=TRUE)/sqrt(length(x)))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- rename(data_sum, c("mean" = varname))
+ return(data_sum)
+}
+```
+
+# Data preparation
+```{r data prep, include = "FALSE", message = "FALSE"}
+
+# check missing data: much more frags missing in the subtidal
+survival.raw %>%
+  group_by(Treatment) %>%
+  summarize(Sum_Missing = sum(`Cause of death` == "Missing", na.rm=TRUE))
+
+# MAYBE SET SURVIVAL TO 0 WHEN MISSING:
+# survival.raw <- within(survival.raw, `Survival (%)`[`Cause of death` == 'Missing'] <- 0)
+
+# removing unnecessary columns
+my_data.S <- survival.raw[c(1,2,4,17)]
+
+# turn dates into number of days from start (07/02/2020)
+startdate <- as.Date("2020-02-07","%Y-%m-%d")
+my_data.S$Date_days <- as.numeric(difftime(my_data.S$Date, startdate, units="days"), units="days")
+
+# change headers of column bleaching
+my_data.S = my_data.S %>% rename(Survival = `Survival (%)`)
+
+# Make treatment and days factors
+my_data.S$Treatment <- as.factor(my_data.S$Treatment)
+
+# MAYBE LEAVE 07-feb IN??
+# removing 07/02 and 11/05 because of inaccurate measurements
+my_data.S1 <- my_data.S[!(my_data.S$Date_days == "0" | my_data.S$Date_days == "94"),]
+
+# get insight into NAs
+my_data.S1 %>%
+  group_by(Treatment) %>%
+  summarize(Sum_NA = sum(is.na(Survival)))
+
+# removing rows containing NAs
+my_data.S2 <- na.omit(my_data.S1)
+```
+
+# Analysis
+## Data exploration
+```{r data exp}
+
+# visualizing data with box plots: heterogeineity likely over Date and Treatment
+boxplot(Survival ~ Date, data = my_data.S2, main="Bleaching", xlab="Date", ylab="Bleaching")
+boxplot(Survival ~ Treatment, data = my_data.S2, main="Bleaching", xlab="Treatment", ylab="Bleaching")
+
+# normality tests: response data is bimodal
+ggqqplot(my_data.S2, x = "Survival")
+hist(my_data.S2$Survival)
+
+# Averaging to approach normality
+my_data.Savg <- as.tbl(my_data.S2) %>% 
+  bind_rows(my_data.S2) %>% 
+  group_by(Structure, Treatment, Date_days) %>% 
+  summarise_all(c("mean"))
+
+# Recheck data: approaching normality, but left tailed: add cube-root transformation
+boxplot(Survival^1/3 ~ Date, data = my_data.Savg, main="Bleaching", xlab="Date", ylab="Bleaching")
+boxplot(Survival^1/3  ~ Treatment, data = my_data.Savg, main="Bleaching", xlab="Treatment", ylab="Bleaching")
+hist(my_data.Savg$Survival^1/3 )
+
+# Correct for variation in start survival
+for (s in 1:60){
+  for (i in c(153, 124, 113, 84, 76, 69, 62, 55, 48, 41, 34)){
+  my_data.Savg$Survival[my_data.Savg$Structure == s & my_data.Savg$Date_days == i] <-  
+  my_data.Savg$Survival[my_data.Savg$Structure == s & my_data.Savg$Date_days == i] / 
+  my_data.Savg$Survival[my_data.Savg$Structure == s & my_data.Savg$Date_days == 34] * 100
+  }
+}
+
+```
+## Model selection
+```{r model selex}
+# Full model with random structure for Date (using structure ID)
+ModS.cr <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg)
+
+# Full model allowing heterogeneity
+ModS.cr2 <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
+                      weights = varIdent(form = ~1 | Date_days))
+ModS.cr3 <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
+                      weights = varIdent(form = ~1 | Treatment))
+lmc <- lmeControl(niterEM = 5200, msMaxIter = 5200) # more iterations to reach convergence
+ModS.cr4 <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
+                      weights = varIdent(form = ~1 | Treatment*Date_days), control = lmc)
+
+# Allowing Treatment*Date_days heterogeineity best choice, despite increase in df:
+AIC(ModS.cr, ModS.cr2, ModS.cr3, ModS.cr4)
+
+anova(ModS.cr4) # Interaction highly significant: final model
+summary(ModS.cr4)
+```
+## Model validation
+```{r model val}
+
+mod <- ModS.cr4 # set model to be validated
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(my_data.Savg$Date_days, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(my_data.Savg$Treatment, resid(mod, type = "pearson")) # residuals split over Treatment
+abline(0,0)
+plot(fitted(mod) ~ my_data.Savg$Survival) # response (log) data vs fitted (log)
+par(op)
+
+```
+## Post hoc and plots
+```{r}
+
+colours = c("#CD4902", "#FFC84B", "#46E2FF", "#0060DE") # set colours for the Treatments
+
+# Treatment|Date plot
+# Get average values, SD and SE of Bleaching split per Date and Treatment
+SumS <- data_summary(my_data.Savg, varname = "Survival", groupnames = c("Date_days", "Treatment"))
+# Create unique Finder (Date:Treatment) to sort data
+SumS <- as.data.frame(append(SumS,
+    list(Finder = paste(SumS$Date_days, SumS$Treatment, sep=":")), after = 0))
+# Create ID (matching order of the Finder)
+SumS <- tibble::rownames_to_column(SumS, "ID") # create ID from rownames
+
+# Perform post hoc and get significance letters (Compact Letter Display) between Treatments within each Date
+cr4.t <- emtrends(ModS.cr4, "Treatment", var = "Date_days")
+letters.cr4 <- multcomp::cld(cr4.t, alpha = 0.05, Letters = letters) # get CLD
+letters.cr4
+
+# Line plot
+ggplot(data=SumS, aes(Date_days, y=Survival, fill = Treatment, color = Treatment)) + 
+  geom_point(size = 3, aes(color=Treatment))+scale_color_manual(values=colours)+
+  geom_smooth(method = "lm", se = FALSE, aes(fill = Treatment))
+
+ggsave("Survival(AVG)_interaction_line.png", width = 23, height = 10, units = "cm")
+
+```
