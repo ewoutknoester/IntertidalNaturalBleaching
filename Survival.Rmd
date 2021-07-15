@@ -5,8 +5,8 @@ date: "13 June 2021"
 output: html_document
 ---
 
-
 # Setup and data import
+
 ```{r setup, include = "FALSE", message = "FALSE"}
 
 rm(list=ls()) # Clear workspace
@@ -22,9 +22,10 @@ library("fitdistrplus")
 library("lmerTest")
 library("car")
 library(nlme) # mixed models allowing for heterogeneity
-library(multcomp) # add significanse levels to plot
+library(multcomp) # add significance levels to plot
 library(emmeans) # Pairwise comparisons
 library(stringr) # remove spaces
+library("grid")
 
 # MAKE SURE FILE IS SAVED BEFORE RUNNING THIS CODE:
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) #Set directory at current (make sure file is saved)
@@ -56,6 +57,7 @@ data_summary <- function(data, varname, groupnames){
 ```
 
 # Data preparation
+
 ```{r data prep, include = "FALSE", message = "FALSE"}
 
 # check missing data: much more frags missing in the subtidal
@@ -63,8 +65,8 @@ survival.raw %>%
   group_by(Treatment) %>%
   summarize(Sum_Missing = sum(`Cause of death` == "Missing", na.rm=TRUE))
 
-# MAYBE SET SURVIVAL TO 0 WHEN MISSING:
-# survival.raw <- within(survival.raw, `Survival (%)`[`Cause of death` == 'Missing'] <- 0)
+# SET SURVIVAL TO 0 WHEN MISSING:
+survival.raw <- within(survival.raw, `Survival (%)`[`Cause of death` == 'Missing'] <- 0)
 
 # removing unnecessary columns
 my_data.S <- survival.raw[c(1,2,4,17)]
@@ -73,13 +75,12 @@ my_data.S <- survival.raw[c(1,2,4,17)]
 startdate <- as.Date("2020-02-07","%Y-%m-%d")
 my_data.S$Date_days <- as.numeric(difftime(my_data.S$Date, startdate, units="days"), units="days")
 
-# change headers of column bleaching
+# change headers of column Survival
 my_data.S = my_data.S %>% rename(Survival = `Survival (%)`)
 
-# Make treatment and days factors
+# Make treatment a factor
 my_data.S$Treatment <- as.factor(my_data.S$Treatment)
 
-# MAYBE LEAVE 07-feb IN??
 # removing 07/02 and 11/05 because of inaccurate measurements
 my_data.S1 <- my_data.S[!(my_data.S$Date_days == "0" | my_data.S$Date_days == "94"),]
 
@@ -93,7 +94,9 @@ my_data.S2 <- na.omit(my_data.S1)
 ```
 
 # Analysis
+
 ## Data exploration
+
 ```{r data exp}
 
 # visualizing data with box plots: heterogeineity likely over Date and Treatment
@@ -125,7 +128,9 @@ for (s in 1:60){
 }
 
 ```
+
 ## Model selection
+
 ```{r model selex}
 # Full model with random structure for Date (using structure ID)
 ModS.cr <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg)
@@ -145,7 +150,9 @@ AIC(ModS.cr, ModS.cr2, ModS.cr3, ModS.cr4)
 anova(ModS.cr4) # Interaction highly significant: final model
 summary(ModS.cr4)
 ```
+
 ## Model validation
+
 ```{r model val}
 
 mod <- ModS.cr4 # set model to be validated
@@ -162,14 +169,16 @@ plot(fitted(mod) ~ my_data.Savg$Survival) # response (log) data vs fitted (log)
 par(op)
 
 ```
+
 ## Post hoc and plots
+
 ```{r}
 
-colours = c("#CD4902", "#FFC84B", "#46E2FF", "#0060DE") # set colours for the Treatments
+colours = c("red", "cyan", "orange", "dodgerblue2") # set colours for the Treatments
 
 # Treatment|Date plot
 # Get average values, SD and SE of Bleaching split per Date and Treatment
-SumS <- data_summary(my_data.Savg, varname = "Survival", groupnames = c("Date_days", "Treatment"))
+SumS <- data_summary(my_data.Savg, varname = "Survival", groupnames = c("Date_days", "Treatment", "Date"))
 # Create unique Finder (Date:Treatment) to sort data
 SumS <- as.data.frame(append(SumS,
     list(Finder = paste(SumS$Date_days, SumS$Treatment, sep=":")), after = 0))
@@ -178,13 +187,26 @@ SumS <- tibble::rownames_to_column(SumS, "ID") # create ID from rownames
 
 # Perform post hoc and get significance letters (Compact Letter Display) between Treatments within each Date
 cr4.t <- emtrends(ModS.cr4, "Treatment", var = "Date_days")
+pairs(cr4.t) # get p-values
 letters.cr4 <- multcomp::cld(cr4.t, alpha = 0.05, Letters = letters) # get CLD
 letters.cr4
 
 # Line plot
-ggplot(data=SumS, aes(Date_days, y=Survival, fill = Treatment, color = Treatment)) + 
+letterA <- grobTree(textGrob("a", x=0.97, y=0.15, hjust=0, gp=gpar(col="black", fontsize=11)))
+letterAB <- grobTree(textGrob("ab", x=0.97, y=0.05, hjust=0, gp=gpar(col="black", fontsize=11)))
+letterB <- grobTree(textGrob("b", x=0.97, y=0.33, hjust=0, gp=gpar(col="black", fontsize=11)))
+letterC <- grobTree(textGrob("c", x=0.97, y=0.74, hjust=0, gp=gpar(col="black", fontsize=11)))
+
+ggplot(data=SumS, aes(Date, y=Survival, fill = Treatment, color = Treatment))+
   geom_point(size = 3, aes(color=Treatment))+scale_color_manual(values=colours)+
-  geom_smooth(method = "lm", se = FALSE, aes(fill = Treatment))
+  geom_smooth(method = "lm", se = FALSE, aes(fill = Treatment))+
+  ggtitle("Survival (% live tissue cover)")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  labs(y= "% live tissue cover relative to 12/03", x = "Date")+
+  annotation_custom(letterA)+
+  annotation_custom(letterAB)+
+  annotation_custom(letterB)+
+  annotation_custom(letterC)
 
 ggsave("Survival(AVG)_interaction_line.png", width = 23, height = 10, units = "cm")
 
