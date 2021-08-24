@@ -1,3 +1,9 @@
+
+# Setup
+
+rm(list=ls()) # Clear workspace
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) #Set directory at current (make sure file is saved)
+
 library(rstudioapi)
 library("readxl")
 library("tidyverse")
@@ -16,28 +22,21 @@ library("grid")
 library("dplyr")
 library("FSA")
 
-# MAKE SURE FILE IS SAVED BEFORE RUNNING THIS CODE:
-setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) #Set directory at current (make sure file is saved)
-# If you get error: save all files, reopen the project and re-run the code
+# Data loading
 
 # load first xls sheet
 survival.raw <- read_excel("ImageJ_R.xlsx", sheet = 1)
-
-# combining next sheets of excel file (each structure had its own sheet)
 for (i in 2:36) {
   temp <- read_excel("ImageJ_R.xlsx", sheet = i)
   survival.raw <- rbind(survival.raw, temp)
 }
 
-# check missing data: much more frags missing in the subtidal
-survival.raw %>%
-  group_by(Treatment) %>%
-  summarize(Sum_Missing = sum(`Cause of death` == "Missing", na.rm=TRUE))
+# Data cleaning
 
 # SET SURVIVAL TO 0 WHEN MISSING:
 survival.raw <- within(survival.raw, `Survival (%)`[`Cause of death` == 'Missing'] <- 0)
 
-# removing unnecessary columns
+# Selecting relevant columns
 my_data.S <- survival.raw[c(1,2,4,17)]
 
 # turn dates into number of days from start (07/02/2020)
@@ -45,7 +44,7 @@ startdate <- as.Date("2020-02-07","%Y-%m-%d")
 my_data.S$Date_days <- as.numeric(difftime(my_data.S$Date, startdate, units="days"), units="days")
 
 # change headers of column Survival
-my_data.S = my_data.S %>% rename(Survival = `Survival (%)`)
+my_data.S = my_data.S %>% dplyr::rename(Survival = `Survival (%)`)
 
 # Make treatment a factor
 my_data.S$Treatment <- as.factor(my_data.S$Treatment)
@@ -53,12 +52,7 @@ my_data.S$Treatment <- as.factor(my_data.S$Treatment)
 # removing 07/02 and 11/05 because of inaccurate measurements
 my_data.S1 <- my_data.S[!(my_data.S$Date_days == "0" | my_data.S$Date_days == "94"),]
 
-# get insight into NAs
-my_data.S1 %>%
-  group_by(Treatment) %>%
-  summarize(Sum_NA = sum(is.na(Survival)))
-
-# removing rows containing NAs
+# removing rows containing NAs (missing pictures)
 my_data.S2 <- na.omit(my_data.S1)
 
 # setting survival to either 0 (dead) or 1(alive)
@@ -69,13 +63,12 @@ my_data.Savg <- as.tbl(my_data.S2) %>%
   group_by(Structure, Treatment, Date, Date_days) %>% 
   summarise_all(c("mean"))
 
-# omit all data that is not from 09/07 (Date_days = 153)
+# omit all data that is not from end date 09/07 (Date_days = 153)
 my_data.Savg2<-my_data.Savg[(my_data.Savg$Date_days==153),]
 
 # normality tests
 ggqqplot(my_data.Savg2, x = "Survival")
 hist(my_data.Savg2$Survival)
-shapiro_test(my_data.Savg2$Survival)
 
 # not normal -> kruskal-wallis test
 kruskal.test(Survival ~ Treatment, data = my_data.Savg2)

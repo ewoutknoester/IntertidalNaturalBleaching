@@ -1,15 +1,15 @@
 ---
 title: "Survival"
-author: "Kyra Pikaar & Ewout Knoester"
+author: "Kyra Pikaar & Ewout Knoester" 
 date: "13 June 2021"
 output: html_document
 ---
 
 # Setup and data import
-
-```{r setup, include = "FALSE", message = "FALSE"}
+```{r setup, include = "FALSE", message = "FALSE", warning = FALSE}
 
 rm(list=ls()) # Clear workspace
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) #Set directory at current (make sure file is saved)
 
 library(rstudioapi) # setwd
 library("readxl")
@@ -26,10 +26,6 @@ library(multcomp) # add significance levels to plot
 library(emmeans) # Pairwise comparisons
 library(stringr) # remove spaces
 library("grid")
-
-# MAKE SURE FILE IS SAVED BEFORE RUNNING THIS CODE:
-setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) #Set directory at current (make sure file is saved)
-# If you get error: save all files, reopen the project and re-run the code
 
 # load first xls sheet
 survival.raw <- read_excel("ImageJ_R.xlsx", sheet = 1)
@@ -56,32 +52,41 @@ data_summary <- function(data, varname, groupnames){
 }
 ```
 
-# Data preparation
+<!-- 
+Data info:
+Treatments example: IntToSub = Coral of Intertidal origin, grown in the Subtidal
+Brigthness expressed in bpp, where 0 = black and 255 = white
+Adjusted brightness: Correct brightness of fragment using brightness of slate, assuming slate should be 255 bpp
+Survival = Cover of live coral tissue per fragment
+AVG Brightness & AVG Survival = Average per 8 fragments (Structure)
+Diff Survival = Difference between End and Start (= 2020-03-12) survival
+-->
 
+# Data preparation
 ```{r data prep, include = "FALSE", message = "FALSE"}
 
 # check missing data: much more frags missing in the subtidal
 survival.raw %>%
   group_by(Treatment) %>%
-  summarize(Sum_Missing = sum(`Cause of death` == "Missing", na.rm=TRUE))
+  summarize(Sum_Missing = sum(`Cause of death` == "Missing", na.rm = TRUE))
 
-# SET SURVIVAL TO 0 WHEN MISSING:
+# Set survival to 0 when missing (because most likely died, then went missing):
 survival.raw <- within(survival.raw, `Survival (%)`[`Cause of death` == 'Missing'] <- 0)
 
-# removing unnecessary columns
-my_data.S <- survival.raw[c(1,2,4,17)]
+# Select relevant columns
+my_data.S <- survival.raw[c(1,2,3, 4,17)]
 
 # turn dates into number of days from start (07/02/2020)
-startdate <- as.Date("2020-02-07","%Y-%m-%d")
-my_data.S$Date_days <- as.numeric(difftime(my_data.S$Date, startdate, units="days"), units="days")
+startdate <- as.Date("2020-02-07", "%Y-%m-%d")
+my_data.S$Date_days <- as.numeric(difftime(my_data.S$Date, startdate, units = "days"), units = "days")
 
 # change headers of column Survival
-my_data.S = my_data.S %>% rename(Survival = `Survival (%)`)
+my_data.S = my_data.S %>% dplyr::rename(Survival = `Survival (%)`)
 
 # Make treatment a factor
 my_data.S$Treatment <- as.factor(my_data.S$Treatment)
 
-# removing 07/02 and 11/05 because of inaccurate measurements
+# Removing 07/02 (different reference slate) and 11/05 (bad viz, few data) because of inaccurate measurements
 my_data.S1 <- my_data.S[!(my_data.S$Date_days == "0" | my_data.S$Date_days == "94"),]
 
 # get insight into NAs
@@ -89,21 +94,19 @@ my_data.S1 %>%
   group_by(Treatment) %>%
   summarize(Sum_NA = sum(is.na(Survival)))
 
-# removing rows containing NAs
+# removing rows containing NAs (often NA beacause of missing picture, thus not mortality)
 my_data.S2 <- na.omit(my_data.S1)
 ```
 
 # Analysis
-
-## Data exploration
-
+## Data exploration and correction
 ```{r data exp}
 
 # visualizing data with box plots: heterogeineity likely over Date and Treatment
-boxplot(Survival ~ Date, data = my_data.S2, main="Bleaching", xlab="Date", ylab="Bleaching")
-boxplot(Survival ~ Treatment, data = my_data.S2, main="Bleaching", xlab="Treatment", ylab="Bleaching")
+boxplot(Survival ~ Date, data = my_data.S2, xlab = "Date", ylab = "Live coral tissue (%)")
+boxplot(Survival ~ Treatment, data = my_data.S2, xlab = "Treatment", ylab = "Live coral tissue (%)")
 
-# normality tests: response data is bimodal
+# normality tests: response data is bimodal (peaks at 0 and 100)
 ggqqplot(my_data.S2, x = "Survival")
 hist(my_data.S2$Survival)
 
@@ -112,37 +115,40 @@ my_data.Savg <- as.tbl(my_data.S2) %>%
   bind_rows(my_data.S2) %>% 
   group_by(Structure, Treatment, Date_days) %>% 
   summarise_all(c("mean"))
+my_data.Savg <- my_data.Savg[-c(4)]
 
 # Recheck data: approaching normality, but left tailed: add cube-root transformation
-boxplot(Survival^1/3 ~ Date, data = my_data.Savg, main="Bleaching", xlab="Date", ylab="Bleaching")
-boxplot(Survival^1/3  ~ Treatment, data = my_data.Savg, main="Bleaching", xlab="Treatment", ylab="Bleaching")
-hist(my_data.Savg$Survival^1/3 )
+boxplot(Survival^1/3 ~ Date, data = my_data.Savg, xlab = "Date", ylab = "Live coral tissue (%)^1/3")
+boxplot(Survival^1/3  ~ Treatment, data = my_data.Savg, xlab = "Treatment", ylab = "Live coral tissue (%)^1/3")
+hist(my_data.Savg$Survival^1/3)
 
-# Correct for variation in start survival
+# Add survival column starting at 100, correcting for (large) differences in start survival
+my_data.Savg <- as.data.frame(append(my_data.Savg, list(Survival100 = ""), after = 5))
 for (s in 1:60){
   for (i in c(153, 124, 113, 84, 76, 69, 62, 55, 48, 41, 34)){
-  my_data.Savg$Survival[my_data.Savg$Structure == s & my_data.Savg$Date_days == i] <-  
+  my_data.Savg$Survival100[my_data.Savg$Structure == s & my_data.Savg$Date_days == i] <-  
   my_data.Savg$Survival[my_data.Savg$Structure == s & my_data.Savg$Date_days == i] / 
   my_data.Savg$Survival[my_data.Savg$Structure == s & my_data.Savg$Date_days == 34] * 100
   }
 }
+my_data.Savg$Survival100 <- as.numeric(my_data.Savg$Survival100)
 
 ```
 
-## Model selection
-
+## Corrected Survival100
+### Model selection
 ```{r model selex}
 # Full model with random structure for Date (using structure ID)
-ModS.cr <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg)
+ModS.cr <- lme(Survival100^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg)
 
 # Full model allowing heterogeneity
-ModS.cr2 <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
-                      weights = varIdent(form = ~1 | Date_days))
-ModS.cr3 <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
-                      weights = varIdent(form = ~1 | Treatment))
+ModS.cr2 <- lme(Survival100^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
+                      weights = varIdent(form = ~1|Date_days))
+ModS.cr3 <- lme(Survival100^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
+                      weights = varIdent(form = ~1|Treatment))
 lmc <- lmeControl(niterEM = 5200, msMaxIter = 5200) # more iterations to reach convergence
-ModS.cr4 <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
-                      weights = varIdent(form = ~1 | Treatment*Date_days), control = lmc)
+ModS.cr4 <- lme(Survival100^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
+                      weights = varIdent(form = ~1|Treatment*Date_days), control = lmc)
 
 # Allowing Treatment*Date_days heterogeineity best choice, despite increase in df:
 AIC(ModS.cr, ModS.cr2, ModS.cr3, ModS.cr4)
@@ -151,8 +157,7 @@ anova(ModS.cr4) # Interaction highly significant: final model
 summary(ModS.cr4)
 ```
 
-## Model validation
-
+### Model validation
 ```{r model val}
 
 mod <- ModS.cr4 # set model to be validated
@@ -170,8 +175,84 @@ par(op)
 
 ```
 
-## Post hoc and plots
+### Post hoc and plots
+```{r}
 
+colours = c("red", "cyan", "orange", "dodgerblue2") # set colours for the Treatments
+
+# Treatment|Date plot
+# Get average values, SD and SE of Bleaching split per Date and Treatment
+SumS <- data_summary(my_data.Savg, varname = "Survival100", groupnames = c("Date_days", "Treatment", "Date"))
+# Create unique Finder (Date:Treatment) and ID to sort data
+SumS <- as.data.frame(append(SumS, list(Finder = paste(SumS$Date_days, SumS$Treatment, sep = ":")), after = 0))
+SumS <- tibble::rownames_to_column(SumS, "ID") # create ID from rownames
+
+# Perform post hoc and get significance letters (Compact Letter Display) between Treatments
+cr4.t <- emtrends(ModS.cr4, "Treatment", var = "Date_days")
+pairs(cr4.t) # get p-values
+letters.cr4 <- multcomp::cld(cr4.t, alpha = 0.05, Letters = letters, order = TRUE) # get CLD
+letters.cr4
+letters.cr4 <- letters.cr4 %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+siglets <- as.data.frame(letters.cr4$.group)
+names(siglets)[1] <- "Letter"
+siglets$Treatment <- letters.cr4$Treatment
+siglets <- siglets[order(siglets$Treatment),]
+
+# Line plot
+ggplot(data = SumS, aes(Date, y = Survival100, fill = Treatment, color = Treatment))+
+  geom_point(size = 3, aes(color = Treatment)) + scale_color_manual(values=colours)+
+  geom_smooth(method = "lm", se = FALSE, aes(fill = Treatment))+
+  labs(y = "Corrected live coral tissue (%)", x = "Date")+
+  geom_errorbar(aes(ymin = Survival100 - (1*se), ymax = Survival100 + (1*se)), width=.1,
+                position=position_dodge(.9))+
+  annotate(geom = "text", x = as.POSIXct("2020-07-15", format = "%Y-%m-%d"), y = SumS[SumS$Date_days == 153, 6]+c(3.5,0,1,5), label = siglets$Letter, fontface = "bold")
+  
+ggsave("Survival100.png", width = 23, height = 10, units = "cm")
+
+```
+
+## Original Survival
+### Model selection
+```{r model selex}
+# Full model with random structure for Date (using structure ID)
+ModS.cr <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg)
+
+# Full model allowing heterogeneity
+ModS.cr2 <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
+                      weights = varIdent(form = ~1|Date_days))
+ModS.cr3 <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
+                      weights = varIdent(form = ~1|Treatment))
+lmc <- lmeControl(niterEM = 5200, msMaxIter = 5200) # more iterations to reach convergence
+ModS.cr4 <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
+                      weights = varIdent(form = ~1|Treatment*Date_days), control = lmc)
+
+# Allowing Treatment*Date_days heterogeineity best choice, despite increase in df:
+AIC(ModS.cr, ModS.cr2, ModS.cr3, ModS.cr4)
+
+anova(ModS.cr4) # Interaction highly significant: final model
+summary(ModS.cr4)
+```
+
+### Model validation
+```{r model val}
+
+mod <- ModS.cr4 # set model to be validated
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(my_data.Savg$Date_days, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(my_data.Savg$Treatment, resid(mod, type = "pearson")) # residuals split over Treatment
+abline(0,0)
+plot(fitted(mod) ~ my_data.Savg$Survival) # response (log) data vs fitted (log)
+par(op)
+
+```
+
+### Post hoc and plots
 ```{r}
 
 colours = c("red", "cyan", "orange", "dodgerblue2") # set colours for the Treatments
@@ -179,35 +260,31 @@ colours = c("red", "cyan", "orange", "dodgerblue2") # set colours for the Treatm
 # Treatment|Date plot
 # Get average values, SD and SE of Bleaching split per Date and Treatment
 SumS <- data_summary(my_data.Savg, varname = "Survival", groupnames = c("Date_days", "Treatment", "Date"))
-# Create unique Finder (Date:Treatment) to sort data
-SumS <- as.data.frame(append(SumS,
-    list(Finder = paste(SumS$Date_days, SumS$Treatment, sep=":")), after = 0))
-# Create ID (matching order of the Finder)
+# Create unique Finder (Date:Treatment) and ID to sort data
+SumS <- as.data.frame(append(SumS, list(Finder = paste(SumS$Date_days, SumS$Treatment, sep = ":")), after = 0))
 SumS <- tibble::rownames_to_column(SumS, "ID") # create ID from rownames
 
-# Perform post hoc and get significance letters (Compact Letter Display) between Treatments within each Date
+# Perform post hoc and get significance letters (Compact Letter Display) between Treatments
 cr4.t <- emtrends(ModS.cr4, "Treatment", var = "Date_days")
 pairs(cr4.t) # get p-values
-letters.cr4 <- multcomp::cld(cr4.t, alpha = 0.05, Letters = letters) # get CLD
+letters.cr4 <- multcomp::cld(cr4.t, alpha = 0.05, Letters = letters, order = TRUE) # get CLD
 letters.cr4
+letters.cr4 <- letters.cr4 %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+siglets <- as.data.frame(letters.cr4$.group)
+names(siglets)[1] <- "Letter"
+siglets$Treatment <- letters.cr4$Treatment
+siglets <- siglets[order(siglets$Treatment),]
 
 # Line plot
-letterA <- grobTree(textGrob("a", x=0.97, y=0.15, hjust=0, gp=gpar(col="black", fontsize=11)))
-letterAB <- grobTree(textGrob("ab", x=0.97, y=0.05, hjust=0, gp=gpar(col="black", fontsize=11)))
-letterB <- grobTree(textGrob("b", x=0.97, y=0.33, hjust=0, gp=gpar(col="black", fontsize=11)))
-letterC <- grobTree(textGrob("c", x=0.97, y=0.74, hjust=0, gp=gpar(col="black", fontsize=11)))
-
-ggplot(data=SumS, aes(Date, y=Survival, fill = Treatment, color = Treatment))+
-  geom_point(size = 3, aes(color=Treatment))+scale_color_manual(values=colours)+
+ggplot(data = SumS, aes(Date, y = Survival, fill = Treatment, color = Treatment))+
+  geom_point(size = 3, aes(color = Treatment)) + scale_color_manual(values=colours)+
   geom_smooth(method = "lm", se = FALSE, aes(fill = Treatment))+
-  ggtitle("Survival (% live tissue cover)")+
-  theme(plot.title = element_text(hjust = 0.5))+
-  labs(y= "% live tissue cover relative to 12/03", x = "Date")+
-  annotation_custom(letterA)+
-  annotation_custom(letterAB)+
-  annotation_custom(letterB)+
-  annotation_custom(letterC)
-
-ggsave("Survival(AVG)_interaction_line.png", width = 23, height = 10, units = "cm")
+  labs(y = "Corrected live coral tissue (%)", x = "Date")+
+  geom_errorbar(aes(ymin = Survival - (1*se), ymax = Survival + (1*se)), width=.1,
+                position=position_dodge(.9))+
+  annotate(geom = "text", x = as.POSIXct("2020-07-15", format = "%Y-%m-%d"), y = SumS[SumS$Date_days == 153, 6]+c(3.5,0,2,2), label = siglets$Letter, fontface = "bold")
+  
+ggsave("Survival.png", width = 23, height = 10, units = "cm")
 
 ```
