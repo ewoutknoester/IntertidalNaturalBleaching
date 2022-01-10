@@ -9,23 +9,24 @@ output: html_document
 ```{r setup, include = "FALSE", message = "FALSE", warning = FALSE}
 
 rm(list=ls()) # Clear workspace
-setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) #Set directory at current (make sure file is saved)
+knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for all subsequent chunks
 
-library(rstudioapi) # setwd
-library("readxl")
-library("tidyverse")
-library("lattice")
-library("rstatix")
-library("ggpubr")
-library("lme4")
-library("fitdistrplus")
-library("lmerTest")
-library("car")
+library(readxl)
+library(tidyverse)
+library(stringr) # remove spaces
+library(rstatix)
+library(ggpubr)
 library(nlme) # mixed models allowing for heterogeneity
 library(multcomp) # add significance levels to plot
 library(emmeans) # Pairwise comparisons
-library(stringr) # remove spaces
-library("grid")
+library(NCmisc) # Check packages used
+
+#library(lattice)
+#library(lme4)
+#library(fitdistrplus)
+#library(lmerTest)
+#library(car)
+#library(grid)
 
 # load first xls sheet
 survival.raw <- read_excel("ImageJ_R.xlsx", sheet = 1)
@@ -55,10 +56,8 @@ data_summary <- function(data, varname, groupnames){
 <!-- 
 Data info:
 Treatments example: IntToSub = Coral of Intertidal origin, grown in the Subtidal
-Brigthness expressed in bpp, where 0 = black and 255 = white
-Adjusted brightness: Correct brightness of fragment using brightness of slate, assuming slate should be 255 bpp
 Survival = Cover of live coral tissue per fragment
-AVG Brightness & AVG Survival = Average per 8 fragments (Structure)
+AVG Survival = Average per 8 fragments (Structure)
 Diff Survival = Difference between End and Start (= 2020-03-12) survival
 -->
 
@@ -94,7 +93,7 @@ my_data.S1 %>%
   group_by(Treatment) %>%
   summarize(Sum_NA = sum(is.na(Survival)))
 
-# removing rows containing NAs (often NA beacause of missing picture, thus not mortality)
+# removing rows containing NAs (often NA because of missing picture, thus not mortality)
 my_data.S2 <- na.omit(my_data.S1)
 ```
 
@@ -137,7 +136,13 @@ my_data.Savg$Survival100 <- as.numeric(my_data.Savg$Survival100)
 
 ## Corrected Survival100
 ### Model selection
-```{r model selex}
+```{r model selex (corrected)}
+
+# Using corrected survival data: start survival set to 100% because of large differences initial survival
+
+#TO DO: incorporate autocorrelation to account for Date_days
+#TO DO: change to beta regression, as dependent variable is a fraction
+
 # Full model with random structure for Date (using structure ID)
 ModS.cr <- lme(Survival100^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg)
 
@@ -158,7 +163,7 @@ summary(ModS.cr4)
 ```
 
 ### Model validation
-```{r model val}
+```{r model val (corrected)}
 
 mod <- ModS.cr4 # set model to be validated
 op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
@@ -176,7 +181,7 @@ par(op)
 ```
 
 ### Post hoc and plots
-```{r}
+```{r post hoc (corrected)}
 
 colours = c("red", "cyan", "orange", "dodgerblue2") # set colours for the Treatments
 
@@ -214,7 +219,7 @@ ggsave("Survival100.png", width = 23, height = 10, units = "cm")
 
 ## Original Survival
 ### Model selection
-```{r model selex}
+```{r model selex (original)}
 # Full model with random structure for Date (using structure ID)
 ModS.cr <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg)
 
@@ -235,7 +240,7 @@ summary(ModS.cr4)
 ```
 
 ### Model validation
-```{r model val}
+```{r model val (original)}
 
 mod <- ModS.cr4 # set model to be validated
 op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
@@ -253,7 +258,7 @@ par(op)
 ```
 
 ### Post hoc and plots
-```{r}
+```{r post hoc (original)}
 
 colours = c("red", "cyan", "orange", "dodgerblue2") # set colours for the Treatments
 
@@ -286,5 +291,15 @@ ggplot(data = SumS, aes(Date, y = Survival, fill = Treatment, color = Treatment)
   annotate(geom = "text", x = as.POSIXct("2020-07-15", format = "%Y-%m-%d"), y = SumS[SumS$Date_days == 153, 6]+c(3.5,0,2,2), label = siglets$Letter, fontface = "bold")
   
 ggsave("Survival.png", width = 23, height = 10, units = "cm")
+
+```
+
+
+# Check packages used
+```{r}
+
+knitr::purl("Survival.Rmd")
+list.functions.in.file("Survival.R")
+unlink("Survival.R")
 
 ```

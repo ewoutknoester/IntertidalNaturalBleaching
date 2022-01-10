@@ -9,7 +9,7 @@ output: html_document
 ```{r setup, include = "FALSE", message = "FALSE", warning = FALSE}
 
 rm(list=ls()) # Clear workspace
-setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) #Set directory at current (make sure file is saved)
+knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for all subsequent chunks
 
 library("readxl")
 library("tidyverse")

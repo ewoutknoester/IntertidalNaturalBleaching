@@ -10,23 +10,17 @@ output: html_document
 ```{r setup, inclue = "FALSE", message = "FALSE"}
 
 rm(list=ls()) # Clear workspace
-setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) #Set directory at current (make sure file is saved)
+knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for all subsequent chunks
 
-library(rstudioapi) # setwd
-library("readxl")
-library("tidyverse")
-library("lattice")
-library("rstatix")
-library("ggpubr")
-library("lme4")
-library("fitdistrplus")
-library("lmerTest")
-library("car")
-library(nlme) # mixed models allowing for heterogeneity
-#library(agricolae) # add significanse levels to plot
-library(multcomp) # add significanse levels to plot
-library(emmeans) # Pairwise comparisons
+library(readxl)
+library(tidyverse)
 library(stringr) # remove spaces
+library(rstatix)
+library(ggpubr)
+library(nlme) # mixed models allowing for heterogeneity
+library(multcomp) # add significance levels to plot
+library(emmeans) # Pairwise comparisons
+library(NCmisc) # Check packages used
 
 # load first xls sheet
 my_data.raw <- read_excel("ImageJ_R.xlsx", sheet = 1)
@@ -56,7 +50,7 @@ data_summary <- function(data, varname, groupnames){
 <!-- 
 Data info:
 Treatments example: IntToSub = Coral of Intertidal origin, grown in the Subtidal
-Brigthness expressed in bpp, where 0 = black and 255 = white
+Brightness expressed in bpp, where 0 = black and 255 = white
 Adjusted brightness: Correct brightness of fragment using brightness of slate, assuming slate should be 255 bpp
 Survival = Cover of live coral tissue per fragment
 AVG Brightness & AVG Survival = Average per 8 fragments (Structure)
@@ -115,6 +109,9 @@ hist(log10(my_data.B2$Bleaching))
 
 ### Model selection
 ```{r all fragments: model selex}
+#TO DO: incorporate autocorrelation to account for Date_days
+#TO DO: change to beta regression, as dependent variable is a fraction
+
 # Full model with random structure for Structure and Date (using structure ID)
 Model.all.log  <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.B2)
 
@@ -130,7 +127,7 @@ lmc <- lmeControl(niterEM = 5200, msMaxIter = 5200) # more iterations to reach c
 Model.all.log4 <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.B2,
                       weights = varIdent(form = ~1|Treatment*Date_days), control = lmc)
 
-# Allowing Treatment*Date_days heterogeineity best choice, despite increase in df:
+# Allowing Treatment*Date_days heterogeneity best choice, despite increase in df:
 AIC(Model.all.log, Model.all.log2, Model.all.log3, Model.all.log4)
 
 anova(Model.all.log4) # Interaction highly significant: final model
@@ -193,6 +190,15 @@ ggplot(data=sum.all.log4.line, aes(Date, y = Bleaching, fill = Treatment)) + yli
             size = 3.5)+
   theme(plot.title = element_text(hjust = 0.5), legend.position = c(0.9, 0.79))
 ggsave("Bleaching(ALL)_interaction_line.png", width = 23, height = 10, units = "cm")
+
+```
+
+# Check packages used
+```{r}
+
+knitr::purl("Bleaching.Rmd")
+list.functions.in.file("Bleaching.R")
+unlink("Bleaching.R")
 
 ```
 
