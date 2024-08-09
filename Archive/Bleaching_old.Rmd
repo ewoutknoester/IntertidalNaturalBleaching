@@ -1,0 +1,204 @@
+---
+title: "Bleaching"
+author: "Kyra Pikaar & Ewout Knoester"
+date: "12 June 2021"
+output: html_document
+---
+
+# Setup and data import
+
+```{r setup, inclue = "FALSE", message = "FALSE"}
+
+rm(list=ls()) # Clear workspace
+knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for all subsequent chunks
+
+library(readxl)
+library(tidyverse)
+library(stringr) # remove spaces
+library(rstatix)
+library(ggpubr)
+library(nlme) # mixed models allowing for heterogeneity
+library(multcomp) # add significance levels to plot
+library(emmeans) # Pairwise comparisons
+library(NCmisc) # Check packages used
+
+# load first xls sheet
+my_data.raw <- read_excel("ImageJ_R.xlsx", sheet = 1)
+
+# combining next sheets of excel file (each structure had its own sheet)
+for (i in 2:36) {
+  temp <- read_excel("ImageJ_R.xlsx", sheet = i)
+  my_data.raw <- rbind(my_data.raw, temp)
+}
+
+# Function to facilitate averaging a dataset
+data_summary <- function(data, varname, groupnames){
+  require(plyr)
+  summary_func <- function(x, col){
+    c(mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE),
+      n  = length(x[[col]]),
+      se = sd(x[[col]], na.rm=TRUE)/sqrt(length(x)))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- rename(data_sum, c("mean" = varname))
+ return(data_sum)
+}
+```
+
+<!-- 
+Data info:
+Treatments example: IntToSub = Coral of Intertidal origin, grown in the Subtidal
+Brightness expressed in bpp, where 0 = black and 255 = white
+Adjusted brightness: Correct brightness of fragment using brightness of slate, assuming slate should be 255 bpp
+Survival = Cover of live coral tissue per fragment
+AVG Brightness & AVG Survival = Average per 8 fragments (Structure)
+Diff Survival = Difference between End and Start (= 2020-03-12) survival
+-->
+
+# Data preparation
+```{r all fragments: data prep, inclue = "FALSE", message = "FALSE"}
+
+# Select relevant columns (for brightness: 13 = AVERAGE values, 15 = GREEN channel only)
+my_data.B <- my_data.raw[c(1,2,4,15)]
+
+# Turn dates into number of days from start (07/02/2020)
+startdate <- as.Date("2020-02-07", "%Y-%m-%d")
+my_data.B$Date_days <- as.numeric(difftime(my_data.B$Date, startdate, units = "days"), units = "days")
+
+# change headers of column bleaching
+names(my_data.B)[4] <- "Bleaching"
+
+# Make treatment and days factors
+my_data.B$Treatment <- as.factor(my_data.B$Treatment)
+my_data.B$Date_days <- as.factor(my_data.B$Date_days)
+
+# Removing 07/02 (different reference slate) and 11/05 (bad viz, few data) because of inaccurate measurements
+my_data.B1 <- my_data.B[!(my_data.B$Date_days == "0" | my_data.B$Date_days == "94"),]
+
+# get insight into NAs
+my_data.B1 %>%
+  group_by(Treatment) %>%
+  summarize(Sum_NA = sum(is.na(Bleaching)))
+
+# removing rows containing NAs, thereby excluding Missing and Dead fragments, and missing pictures
+my_data.B2 <- na.omit(my_data.B1)
+```
+
+# Analysis
+## All fragments
+### Data exploration
+
+```{r all fragments: data exp}
+
+# Visualizing data with box plots: heterogeneity likely over Date and Treatment
+boxplot(Bleaching ~ Date, data = my_data.B2, xlab = "Date", ylab = "Brightness (bpp)")
+boxplot(Bleaching ~ Treatment, data = my_data.B2, xlab = "Treatment", ylab = "Brightness (bpp)")
+
+# Normality tests: response data is right-skewed
+ggqqplot(my_data.B2, x = "Bleaching")
+
+# visualizing log10(response) data with box plots: still heterogeneity likely over Date and Treatment
+boxplot(log10(Bleaching)~Date, data = my_data.B2, xlab = "Date", ylab = "LOG10(Brightness(bpp))")
+boxplot(log10(Bleaching)~Treatment, data = my_data.B2, xlab = "Treatment", ylab = "LOG10(Brightness(bpp))")
+
+# normality test of log10(response): data looks normal
+hist(log10(my_data.B2$Bleaching))
+```
+
+### Model selection
+```{r all fragments: model selex}
+#TO DO: incorporate autocorrelation to account for Date_days
+#TO DO: change to beta regression, as dependent variable is a fraction
+
+# Full model with random structure for Structure and Date (using structure ID)
+Model.all.log  <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.B2)
+
+# Full model allowing heterogeneity
+Model.all.log2 <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.B2,
+                      weights = varIdent(form = ~1|Date_days))
+
+Model.all.log3 <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.B2,
+                      weights = varIdent(form = ~1|Treatment))
+
+lmc <- lmeControl(niterEM = 5200, msMaxIter = 5200) # more iterations to reach convergence (will take some mins)
+
+Model.all.log4 <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.B2,
+                      weights = varIdent(form = ~1|Treatment*Date_days), control = lmc)
+
+# Allowing Treatment*Date_days heterogeneity best choice, despite increase in df:
+AIC(Model.all.log, Model.all.log2, Model.all.log3, Model.all.log4)
+
+anova(Model.all.log4) # Interaction highly significant: final model
+summary(Model.all.log4)
+```
+
+### Model validation
+```{r all fragments: model val}
+
+mod <- Model.all.log4 # set model to be validated
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(my_data.B2$Date_days, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(my_data.B2$Treatment, resid(mod, type = "pearson")) # residuals split over Treatment
+abline(0,0)
+plot(fitted(mod) ~ log10(my_data.B2$Bleaching)) # response (log) data vs fitted (log)
+par(op)
+
+```
+
+### Post hoc and plots
+```{r}
+
+colours = c("red", "cyan", "orange", "dodgerblue2") # set colours for the Treatments
+
+# Line plot
+# Get average values, SD and SE of Bleaching split per Date and Treatment
+sum.all.log4 <- data_summary(my_data.B2, varname = "Bleaching", groupnames = c("Date_days", "Treatment", "Date"))
+
+# Create unique Finder (Date:Treatment) to sort data
+sum.all.log4 <- as.data.frame(append(sum.all.log4,
+    list(Finder = paste(sum.all.log4$Date_days, sum.all.log4$Treatment, sep=":")), after = 0))
+
+# Create ID (matching order of the Finder)
+sum.all.log4 <- tibble::rownames_to_column(sum.all.log4, "ID") # create ID from rownames
+
+# Perform post hoc and get significance letters (Compact Letter Display) between Treatments within each Date
+ph.all.log4 <- emmeans(Model.all.log4, specs = pairwise ~ Treatment|Date_days, adjust = "tukey", type = "response")
+letters.all.log4 <- multcomp::cld(ph.all.log4$emmeans, alpha = 0.05, Letters = letters) # get CLD
+
+# Create ID and order dataframe by ID (matching sum dataframe)
+letters.all.log4 <- tibble::rownames_to_column(letters.all.log4, "ID") # Create ID from rownames
+letters.all.log4 <- letters.all.log4[order(as.numeric(letters.all.log4$ID)),] # order by ID
+letters.all.log4 <- letters.all.log4 %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+# Merge sig.letter dataframe into the summary dataframe
+sum.all.log4 <- cbind(sum.all.log4, siglet = letters.all.log4$.group)
+sum.all.log4.line <- sum.all.log4
+
+ggplot(data=sum.all.log4.line, aes(Date, y = Bleaching, fill = Treatment)) + ylim(35, 165)+
+  labs(y= "Brightness (bpp)", x = "Date")+
+  geom_line(size = 1, linetype = "solid", aes(color = Treatment))+ scale_color_manual(values = colours)+ 
+  geom_point(size = 3, aes(color = Treatment))+ scale_color_manual(values = colours)+
+  geom_errorbar(aes(ymin = Bleaching - (se), ymax = Bleaching + (se), color = Treatment), width = .9)+
+  geom_text(data = sum.all.log4.line, aes(x = Date, y = Bleaching + se, label = siglet, vjust = -0.8), 
+            size = 3.5)+
+  theme(plot.title = element_text(hjust = 0.5), legend.position = c(0.9, 0.79))
+ggsave("Bleaching(ALL)_interaction_line.png", width = 23, height = 10, units = "cm")
+
+```
+
+# Check packages used
+```{r}
+
+knitr::purl("Bleaching.Rmd")
+list.functions.in.file("Bleaching.R")
+unlink("Bleaching.R")
+
+```
+

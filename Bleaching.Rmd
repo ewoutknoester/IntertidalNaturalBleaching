@@ -5,31 +5,27 @@ date: "12 June 2021"
 output: html_document
 ---
 
-# Setup and data import
+# TODO: re-run all analyses (bleaching & survival) without leaving out bad start fragments, as that might raise questions?
 
+# R setup
 ```{r setup, inclue = "FALSE", message = "FALSE"}
 
 rm(list=ls()) # Clear workspace
 knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for all subsequent chunks
 
-library(readxl)
-library(tidyverse)
-library(stringr) # remove spaces
-library(rstatix)
-library(ggpubr)
-library(nlme) # mixed models allowing for heterogeneity
-library(multcomp) # add significance levels to plot
 library(emmeans) # Pairwise comparisons
+library(ggpattern) # Patterns in ggplot
+library(lemon) # Double x-axis in facet grid
+library(lubridate) # Work with dates
+library(multcomp) # add significance levels to plot
 library(NCmisc) # Check packages used
-
-# load first xls sheet
-my_data.raw <- read_excel("ImageJ_R.xlsx", sheet = 1)
-
-# combining next sheets of excel file (each structure had its own sheet)
-for (i in 2:36) {
-  temp <- read_excel("ImageJ_R.xlsx", sheet = i)
-  my_data.raw <- rbind(my_data.raw, temp)
-}
+library(nlme) # mixed models allowing for heterogeneity
+library(panelr) # Convert data from wide to long
+library(readxl)
+library(rstatix)
+library(stringr) # remove spaces
+library(tidyverse)
+library(writexl) # Export Excel
 
 # Function to facilitate averaging a dataset
 data_summary <- function(data, varname, groupnames){
@@ -45,6 +41,7 @@ data_summary <- function(data, varname, groupnames){
   data_sum <- rename(data_sum, c("mean" = varname))
  return(data_sum)
 }
+
 ```
 
 <!-- 
@@ -53,145 +50,520 @@ Treatments example: IntToSub = Coral of Intertidal origin, grown in the Subtidal
 Brightness expressed in bpp, where 0 = black and 255 = white
 Adjusted brightness: Correct brightness of fragment using brightness of slate, assuming slate should be 255 bpp
 Survival = Cover of live coral tissue per fragment
-AVG Brightness & AVG Survival = Average per 8 fragments (Structure)
-Diff Survival = Difference between End and Start (= 2020-03-12) survival
 -->
 
 # Data preparation
-```{r all fragments: data prep, inclue = "FALSE", message = "FALSE"}
+```{r data prep, inclue = "FALSE", message = "FALSE", warning = "FALSE"}
 
-# Select relevant columns (for brightness: 13 = AVERAGE values, 15 = GREEN channel only)
-my_data.B <- my_data.raw[c(1,2,4,15)]
+# Load data
+df0.raw <- read_excel("Raw data/Bleaching (ImageJ).xlsx")
+
+# Select data
+df0.raw <- subset(df0.raw, Experiment == "Intertidal 2020 (natural bleaching)")
+df0.raw <- dplyr::select(df0.raw, -c("Experiment", "Location", "Species", "Origin"))
+
+# Wide to long
+df1.clean <- as.data.frame(long_panel(df0.raw, prefix = "_", begin = 0, end = 16, label_location = "end", check.varying = FALSE))
+
+# Delete empty data rows
+df1.clean <- df1.clean %>% drop_na(Date)
+
+# Correct brightness values for variations in background lightening, using white (255) reference slate values
+df1.clean$AVG.adj <- (df1.clean$AVG/df1.clean$ControlAVG)*255
+df1.clean$R.adj <- (df1.clean$R/df1.clean$ControlR)*255
+df1.clean$G.adj <- (df1.clean$G/df1.clean$ControlG)*255
+df1.clean$B.adj <- (df1.clean$B/df1.clean$ControlB)*255
+
+# Select relevant columns
+#! Choice for Average (AVG.adj) brightness values (instead of e.g. Green channel)
+df2.clean <- df1.clean[c("Treatment", "Remarks", "Structure", "Position", "Date", "AVG.adj", "Survival", "Cause", "Comments")]
+# Standardize header of brightness column
+names(df2.clean)[6] <- "Brightness"
 
 # Turn dates into number of days from start (07/02/2020)
 startdate <- as.Date("2020-02-07", "%Y-%m-%d")
-my_data.B$Date_days <- as.numeric(difftime(my_data.B$Date, startdate, units = "days"), units = "days")
+df2.clean$Date_days <- as.numeric(difftime(df2.clean$Date, startdate, units = "days"), units = "days")
 
-# change headers of column bleaching
-names(my_data.B)[4] <- "Bleaching"
+# Set heatprimed treatments (corals that were exposed ex situ to 32 degrees for 5 days, 3 months before the natural bleaching)
+names(df2.clean)[names(df2.clean) == "Remarks"] <- "Heatprimed"
+df2.clean <- df2.clean %>% dplyr::mutate(Heatprimed = replace_na(Heatprimed, "No"))
+df2.clean$Heatprimed <- ifelse(df2.clean$Heatprimed == "Heatshocked", "Heat primed", "Control")
 
-# Make treatment and days factors
-my_data.B$Treatment <- as.factor(my_data.B$Treatment)
-my_data.B$Date_days <- as.factor(my_data.B$Date_days)
+# Set factors
+df2.clean$Date_days <- as.factor(df2.clean$Date_days)
+df2.clean$Cause <- as.factor(df2.clean$Cause)
 
-# Removing 07/02 (different reference slate) and 11/05 (bad viz, few data) because of inaccurate measurements
-my_data.B1 <- my_data.B[!(my_data.B$Date_days == "0" | my_data.B$Date_days == "94"),]
+# Data cleaning
+#! Removing measurements mid Feb (different reference slate) and few other dates because of inaccurate measurements (bad viz, few data)
+df2.clean <- df2.clean[!(df2.clean$Date_days == "0" | df2.clean$Date_days == "1" | df2.clean$Date_days == "17" | df2.clean$Date_days == "94"),]
 
-# get insight into NAs
-my_data.B1 %>%
-  group_by(Treatment) %>%
-  summarize(Sum_NA = sum(is.na(Bleaching)))
+#! Removing measurements every other week to get more regular sample intervals 
+df2.clean <- df2.clean[!(df2.clean$Date_days == "41" |  df2.clean$Date_days == "48" |  df2.clean$Date_days == "62" | df2.clean$Date_days == "76" | df2.clean$Date_days == "124"),]
 
-# removing rows containing NAs, thereby excluding Missing and Dead fragments, and missing pictures
-my_data.B2 <- na.omit(my_data.B1)
+## Exclude a few empty observations (no picture was taken)
+df2.clean <- subset(df2.clean, is.na(Comments) | Comments != "No picture")
+
+## Exclude few fragments that started dying because structure was temporarily down (and frags laid in the sand)
+df2.clean <- subset(df2.clean, is.na(Cause) | Cause != "Exclude")
+
+## Exclude 11 fragments that went missing
+df2.clean <- subset(df2.clean, is.na(Cause) | Cause != "Missing")
+
+# Abbreviate treatments
+df2.clean$Treatment <- as.factor(df2.clean$Treatment)
+levels(df2.clean$Treatment) <- c("II", "IS", "SI", "SS")
+
+# Export data selection
+write_xlsx(df2.clean, "Intertidal natural bleaching_Brightness.xlsx")
+
+# Clear cache
+rm(startdate, df0.raw, df1.clean, df2.clean)
+
 ```
 
-# Analysis
-## All fragments
-### Data exploration
+# Data cleanup
+```{r cleanup, inclue = "FALSE", message = "FALSE"}
 
-```{r all fragments: data exp}
+# Load data
+df3.clean <- read_excel("Intertidal natural bleaching_Brightness.xlsx")
 
-# Visualizing data with box plots: heterogeneity likely over Date and Treatment
-boxplot(Bleaching ~ Date, data = my_data.B2, xlab = "Date", ylab = "Brightness (bpp)")
-boxplot(Bleaching ~ Treatment, data = my_data.B2, xlab = "Treatment", ylab = "Brightness (bpp)")
+# Set factors
+df3.clean$Treatment <- as.factor(df3.clean$Treatment)
+df3.clean$Date_days <- as.numeric(df3.clean$Date_days) - 34
+df3.clean$Date_days <- as.factor(df3.clean$Date_days)
+df3.clean$Heatprimed <- as.factor(df3.clean$Heatprimed)
+df3.clean$Position <- as.factor(df3.clean$Position)
 
-# Normality tests: response data is right-skewed
-ggqqplot(my_data.B2, x = "Bleaching")
+# Set apart survival data
+df4.surv <- df3.clean
 
-# visualizing log10(response) data with box plots: still heterogeneity likely over Date and Treatment
-boxplot(log10(Bleaching)~Date, data = my_data.B2, xlab = "Date", ylab = "LOG10(Brightness(bpp))")
-boxplot(log10(Bleaching)~Treatment, data = my_data.B2, xlab = "Treatment", ylab = "LOG10(Brightness(bpp))")
+# --- Cleanup for Brightness data ---
+#! Select only fragments with >= 20 live coral tissue for brightness analysis (smaller areas often unrepresentative/dying)
+df4.bright <- subset(df3.clean, Survival >= 20)
+df4.bright <- df4.bright %>% drop_na(Brightness) # Remove a few missing pics
 
-# normality test of log10(response): data looks normal
-hist(log10(my_data.B2$Bleaching))
+# Necrosis summary
+sum.necrosis <- subset(df4.bright, grepl("necrosis", df4.bright$Comments))
+summary(sum.necrosis) # Intertidal corals more affected by necrosis, regardless of growing location
+
+# Tunicate summary
+sum.tunicate <- subset(df4.bright, grepl("tunicate", df4.bright$Comments))
+summary(sum.tunicate) # Corals in subtidal area more affected by tunicate, especially heatprimed corals
+
+# Calculate paling and bleaching thresholds (based on the mentioning of these categories in the comments)
+## Subset data
+sum.threshold <- df4.bright
+## Grab categories from comments
+sum.threshold$Comments <- tolower(sum.threshold$Comments)
+sum.threshold <- subset(sum.threshold, !grepl("non-bleaching", sum.threshold$Comments) )
+sum.threshold$Status <- ifelse(grepl("bleach", sum.threshold$Comments), "Bleached", 
+                        ifelse(grepl("pal", sum.threshold$Comments), "Pale", "Other"))
+## Visualize: 75% data threshold is 90 for paling and 140 for bleaching
+ggplot(sum.threshold, aes(x=Status, y=Brightness))+ 
+  geom_boxplot()
+
 ```
 
-### Model selection
-```{r all fragments: model selex}
+# Model selection
+```{r model selection}
 #TO DO: incorporate autocorrelation to account for Date_days
-#TO DO: change to beta regression, as dependent variable is a fraction
 
-# Full model with random structure for Structure and Date (using structure ID)
-Model.all.log  <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.B2)
+# Model for Treatment x Date x Heatprimed
+## Full model with random structure for Structure and Date (using structure ID)
+Model.all.log  <- lme(log10(Brightness) ~ Treatment*Date_days*Heatprimed, random = ~1|Structure, data = df4.bright)
 
-# Full model allowing heterogeneity
-Model.all.log2 <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.B2,
+## Full model allowing heterogeneity
+Model.all.logHD  <- lme(log10(Brightness) ~ Treatment*Date_days*Heatprimed, random = ~1|Structure, data = df4.bright,
                       weights = varIdent(form = ~1|Date_days))
 
-Model.all.log3 <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.B2,
+Model.all.logHT <- lme(log10(Brightness) ~ Treatment*Date_days*Heatprimed, random = ~1|Structure, data = df4.bright,
                       weights = varIdent(form = ~1|Treatment))
 
-lmc <- lmeControl(niterEM = 5200, msMaxIter = 5200) # more iterations to reach convergence (will take some mins)
+Model.all.logHH <- lme(log10(Brightness) ~ Treatment*Date_days*Heatprimed, random = ~1|Structure, data = df4.bright,
+                      weights = varIdent(form = ~1|Heatprimed))
 
-Model.all.log4 <- lme(log10(Bleaching) ~ Treatment*Date_days, random = ~1|Structure, data = my_data.B2,
+## Interaction on heterogeneity (the other interactions and three-way didn't further improve AIC or residuals)
+lmc <- lmeControl(niterEM = 5200, msMaxIter = 5200) # more iterations to reach convergence (will take some 7 mins)
+Model.all.logHDT <- lme(log10(Brightness) ~ Treatment*Date_days*Heatprimed, random = ~1|Structure, data = df4.bright,
                       weights = varIdent(form = ~1|Treatment*Date_days), control = lmc)
 
-# Allowing Treatment*Date_days heterogeneity best choice, despite increase in df:
-AIC(Model.all.log, Model.all.log2, Model.all.log3, Model.all.log4)
+## Allowing Treatment*Date_days heterogeneity best choice according to AIC; all residuals appear fine
+AIC(Model.all.log, Model.all.logHD, Model.all.logHT, Model.all.logHH, Model.all.logHDT)
 
-anova(Model.all.log4) # Interaction highly significant: final model
-summary(Model.all.log4)
+anova(Model.all.logHDT) # Three-way interaction highly significant: final model
+
+# Model to test for effect Genotype (averaging response over Date to prevent singularity)
+## Data selection: only use data at height of experiment
+df4.bright.G <- subset(df4.bright, Date_days == 35 | Date_days == 50)
+
+## Model  
+Model.all.logGHT <- lme(log10(Brightness) ~ Treatment*Heatprimed*Position, random = ~1|Structure, data = df4.bright.G,
+                      weights = varIdent(form = ~1|Treatment*Heatprimed), control = lmc)
+
+anova(Model.all.logGHT) # Three-way interaction highly significant also for Genotype (Position)
+
 ```
 
 ### Model validation
-```{r all fragments: model val}
+```{r model validation}
 
-mod <- Model.all.log4 # set model to be validated
+# Residuals for Treatment x Date x Heatprimed model
+mod <- Model.all.logHDT # set model to be validated
 op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
 plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
 abline(0,0)
 hist(resid(mod, type = "pearson"), main = "") # histogram residuals
 qqnorm(resid(mod, type = "pearson")) # QQplot residuals
-plot(my_data.B2$Date_days, resid(mod, type = "pearson")) # residuals split over Date
+plot(df4.bright$Date_days, resid(mod, type = "pearson")) # residuals split over Date
 abline(0,0)
-plot(my_data.B2$Treatment, resid(mod, type = "pearson")) # residuals split over Treatment
+plot(df4.bright$Treatment, resid(mod, type = "pearson")) # residuals split over Treatment
 abline(0,0)
-plot(fitted(mod) ~ log10(my_data.B2$Bleaching)) # response (log) data vs fitted (log)
+plot(df4.bright$Heatprimed, resid(mod, type = "pearson")) # residuals split over Heatprimed
+abline(0,0)
+plot(fitted(mod) ~ log10(df4.bright$Brightness)) # response (log) data vs fitted (log)
+par(op)
+
+# Residuals for Genotype x Heatprimed x Treatment model
+mod <- Model.all.logGHT # set model to be validated
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(df4.bright.G$Treatment, resid(mod, type = "pearson")) # residuals split over Treatment
+abline(0,0)
+plot(df4.bright.G$Heatprimed, resid(mod, type = "pearson")) # residuals split over Heatprimed
+abline(0,0)
+plot(df4.bright.G$Position, resid(mod, type = "pearson")) # residuals split over Heatprimed
+abline(0,0)
+plot(fitted(mod) ~ log10(df4.bright.G$Brightness)) # response (log) data vs fitted (log)
 par(op)
 
 ```
 
 ### Post hoc and plots
-```{r}
+```{r plots}
 
-colours = c("red", "cyan", "orange", "dodgerblue2") # set colours for the Treatments
+# Set colours for all graphs
+colours = c("#fcb500", "#c43d16", "#1353df", "#46b5ff")
 
-# Line plot
-# Get average values, SD and SE of Bleaching split per Date and Treatment
-sum.all.log4 <- data_summary(my_data.B2, varname = "Bleaching", groupnames = c("Date_days", "Treatment", "Date"))
+# ---- TREATMENT x Heatprimed x Date ----
+## Get average values, SD and SE of Bleaching split per Date and Treatment
+sum.all.log4 <- data_summary(df4.bright, varname = "Brightness", groupnames = c("Date_days", "Treatment", "Heatprimed", "Date"))
 
-# Create unique Finder (Date:Treatment) to sort data
+## Create unique Finder (Date:Treatment:Heatprimed) to sort data
 sum.all.log4 <- as.data.frame(append(sum.all.log4,
-    list(Finder = paste(sum.all.log4$Date_days, sum.all.log4$Treatment, sep=":")), after = 0))
+    list(Finder = paste(sum.all.log4$Date_days, sum.all.log4$Treatment, sum.all.log4$Heatprimed, sep=":")), after = 0))
+sum.all.log4 <- sum.all.log4[order(sum.all.log4$Finder),] # order by Finder
 
-# Create ID (matching order of the Finder)
-sum.all.log4 <- tibble::rownames_to_column(sum.all.log4, "ID") # create ID from rownames
-
-# Perform post hoc and get significance letters (Compact Letter Display) between Treatments within each Date
-ph.all.log4 <- emmeans(Model.all.log4, specs = pairwise ~ Treatment|Date_days, adjust = "tukey", type = "response")
+## Perform post hoc and get significance letters (Compact Letter Display) between Treatments within each Date
+ph.all.log4 <- emmeans(Model.all.logHDT, specs = pairwise ~ Treatment|Date_days|Heatprimed, adjust = "tukey", type = "response")
 letters.all.log4 <- multcomp::cld(ph.all.log4$emmeans, alpha = 0.05, Letters = letters) # get CLD
 
-# Create ID and order dataframe by ID (matching sum dataframe)
-letters.all.log4 <- tibble::rownames_to_column(letters.all.log4, "ID") # Create ID from rownames
-letters.all.log4 <- letters.all.log4[order(as.numeric(letters.all.log4$ID)),] # order by ID
+## Create ID and order dataframe by ID (matching sum dataframe)
+letters.all.log4 <- as.data.frame(append(letters.all.log4,
+    list(Finder = paste(letters.all.log4$Date_days, letters.all.log4$Treatment, letters.all.log4$Heatprimed, sep=":")), after = 0))
+letters.all.log4 <- letters.all.log4[order(letters.all.log4$Finder),] # order by Finder
 letters.all.log4 <- letters.all.log4 %>% mutate(.group = str_squish(.group)) # remove white spaces
 
-# Merge sig.letter dataframe into the summary dataframe
+## Merge sig.letter dataframe into the summary dataframe
 sum.all.log4 <- cbind(sum.all.log4, siglet = letters.all.log4$.group)
 sum.all.log4.line <- sum.all.log4
 
-ggplot(data=sum.all.log4.line, aes(Date, y = Bleaching, fill = Treatment)) + ylim(35, 165)+
-  labs(y= "Brightness (bpp)", x = "Date")+
-  geom_line(size = 1, linetype = "solid", aes(color = Treatment))+ scale_color_manual(values = colours)+ 
-  geom_point(size = 3, aes(color = Treatment))+ scale_color_manual(values = colours)+
-  geom_errorbar(aes(ymin = Bleaching - (se), ymax = Bleaching + (se), color = Treatment), width = .9)+
-  geom_text(data = sum.all.log4.line, aes(x = Date, y = Bleaching + se, label = siglet, vjust = -0.8), 
-            size = 3.5)+
-  theme(plot.title = element_text(hjust = 0.5), legend.position = c(0.9, 0.79))
-ggsave("Bleaching(ALL)_interaction_line.png", width = 23, height = 10, units = "cm")
+## Plot
+ggplot(data=sum.all.log4.line, aes(Date, y = Brightness, fill = Treatment)) +
+  geom_hline(yintercept=90, linetype="twodash", color = "#f38aff", size = 0.55)+
+  geom_hline(yintercept=150, linetype="dotted", color = "#f38aff", size = 0.75)+
+  geom_errorbar(aes(ymin = Brightness - (se), ymax = Brightness + (se), color = Treatment), width = .9)+
+  scale_y_continuous(expand = c(0, 0), breaks = c(40, 80, 120, 160), limits = c(34, 165))+
+  scale_x_datetime(limits = ymd_h(c("2020-03-05 00", "2020-07-12 23"))) +
+  facet_rep_grid(rows=vars(Heatprimed), scales = "fixed", repeat.tick.labels = T)+
+  labs(y= "Brightness (bpp)", x = "")+
+  geom_line(aes(linewidth = Heatprimed), color = "black")+ 
+  scale_linewidth_manual(values = c(0, 1.5))+
+  geom_line(size = 1, linetype = "solid", aes(color = Treatment))+
+  scale_color_manual(values = colours)+ 
+  geom_point(stroke = rep(c(0,1), times = 24), colour = "black",
+             aes(shape = Treatment, fill = Treatment, size = Heatprimed))+
+  scale_color_manual(values = colours)+
+  scale_size_manual(values = c(4, 3))+
+  scale_shape_manual(values = c(24,25,25,24))+
+  scale_fill_manual(values = colours)+
+  geom_text(data = sum.all.log4.line, aes(x = Date+lubridate::days(2), y = Brightness + 0*se, label = siglet),
+            vjust = -0.6, hjust = -0, size = 4)+
+  guides(linewidth = "none", colour = "none", size = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 5, stroke = 0, colour = "black")))+
+  theme(
+    panel.spacing = unit(2, "lines"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.1),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(size = 9, face = "bold", vjust = 0.5),
+    axis.title.y = element_text(size = 11, vjust = 2),
+    axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
+    strip.text = element_text(size = 11),
+    legend.key.size = unit(22, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    legend.key.height =  unit(0.5, "cm"),
+    legend.key.spacing.y = unit(0.35, "cm"))
+ggsave("Bleaching_Treatment x Primed x Date.png", width = 18, height = 18, units = "cm")
+
+# ---- HEATPRIMED x Treatment x Date ----
+## Get average values, SD and SE of Bleaching split per Date and Treatment
+sum.HTD <- data_summary(df4.bright, varname = "Brightness", groupnames = c("Date_days", "Treatment", "Heatprimed", "Date"))
+
+## Create unique Finder (Date:Treatment:Heatprimed) to sort data
+sum.HTD <- as.data.frame(append(sum.HTD,
+    list(Finder = paste(sum.HTD$Date_days, sum.HTD$Treatment, sum.HTD$Heatprimed, sep=":")), after = 0))
+sum.HTD <- sum.HTD[order(sum.HTD$Finder),] # order by Finder
+
+## Perform post hoc and get significance letters (Compact Letter Display) between Treatments within each Date
+ph.HTD <- emmeans(Model.all.logHDT, specs = pairwise ~ Heatprimed|Date_days|Treatment, adjust = "tukey", type = "response")
+letters.HTD <- multcomp::cld(ph.HTD$emmeans, alpha = 0.05, Letters = letters) # get CLD
+
+## Create ID and order dataframe by ID (matching sum dataframe)
+letters.HTD <- as.data.frame(append(letters.HTD,
+    list(Finder = paste(letters.HTD$Date_days, letters.HTD$Treatment, letters.HTD$Heatprimed, sep=":")), after = 0))
+letters.HTD <- letters.HTD[order(letters.HTD$Finder),] # order by Finder
+letters.HTD <- letters.HTD %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+## Merge sig.letter dataframe into the summary dataframe
+sum.HTD <- cbind(sum.HTD, siglet = letters.HTD$.group)
+
+## Whole bunch of stuff to transform letters to an asterisk (only works if there are only two letters: a and b)
+sum.HTD <- as.data.frame(append(sum.HTD,
+                 list(wave = ifelse(sum.HTD$Heatprimed == "Control", 1, 2)), after = 0))
+sum.HTD <- sum.HTD[order(sum.HTD$Heatprimed),]
+sum.HTD <- as.data.frame(append(sum.HTD, list(id = rep(seq(1, 24, by = 1), 2)), after = 0))              
+sum.HTD <- widen_panel(panel_data(sum.HTD), separator = "_")
+ph.HTD.df <- as.data.frame(ph.HTD$contrasts)
+ph.HTD.df <- as.data.frame(append(ph.HTD.df,
+    list(Finder = paste(ph.HTD.df$Date_days, ph.HTD.df$Treatment, sep=":")), after = 0))
+ph.HTD.df <- ph.HTD.df[order(ph.HTD.df$Finder),] 
+sum.HTD$p.value <- ph.HTD.df$p.value
+sum.HTD <- as.data.frame(append(sum.HTD,
+              list(Star_1 = "", Star_2 = ifelse(sum.HTD$p.value < 0.001, "***",
+                                         ifelse(sum.HTD$p.value < 0.01, "**",
+                                         ifelse(sum.HTD$p.value < 0.05, "*", ""))))))
+sum.HTD <- as.data.frame(append(sum.HTD,
+              list(Brightness.max = ifelse(sum.HTD$Brightness_1 > sum.HTD$Brightness_2, sum.HTD$Brightness_1, sum.HTD$Brightness_2))))
+sum.HTD <- as.data.frame(long_panel(sum.HTD, prefix = "_", begin = 1, end = 2, label_location = "end", check.varying = FALSE))
+
+## Plot
+ggplot(data=sum.HTD, aes(Date, y = Brightness, fill = Treatment)) +
+  geom_hline(yintercept=90, linetype="twodash", color = "#f38aff", size = 0.55)+
+  geom_hline(yintercept=150, linetype="dotted", color = "#f38aff", size = 0.75)+
+  geom_errorbar(aes(ymin = Brightness - (se), ymax = Brightness + (se), color = Treatment), width = .9)+
+  geom_line(aes(linewidth = Heatprimed), color = "black")+ 
+  scale_linewidth_manual(values = c(0, 1.5))+
+  scale_y_continuous(expand = c(0, 0), breaks = c(40, 80, 120, 160), limits = c(34, 180))+
+  scale_x_datetime(limits = ymd_h(c("2020-03-05 00", "2020-07-12 23"))) +
+  facet_rep_grid(rows=vars(Treatment), scales = "fixed", repeat.tick.labels = T)+
+  labs(y= "Brightness (bpp)", x = "")+
+  geom_line(size = 1, aes(color = Treatment, linetype = Heatprimed))+
+  scale_linetype_manual(values = c("solid", "solid"))+
+  scale_color_manual(values = colours)+ 
+  geom_point(stroke = rep(c(0,1), times = 24), colour = "black", aes(shape = Treatment, fill = Treatment, size = Heatprimed))+
+  scale_color_manual(values = colours)+
+  scale_size_manual(values = c(3, 2))+
+  scale_shape_manual(values = c(24,25,25,24))+
+  scale_fill_manual(values = colours)+
+  geom_text(data = sum.HTD, aes(x=Date, y = Brightness.max + se + 0.001, label = Star), 
+            vjust= 0, hjust = 0.5, size = 5.5, fontface = "bold", position=position_dodge(0.9))+
+  theme(
+    panel.spacing = unit(2, "lines"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.1),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    legend.position="none",
+    axis.text.x = element_text(size = 9, face = "bold", vjust = 0.5),
+    axis.title.y = element_text( size = 11, vjust = 2),
+    axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
+    strip.text = element_text(size = 11))
+ggsave("Bleaching_Heatprimed x Treatment x Date.png", width = 18, height = 18, units = "cm")
+
+# ----- GENOTYPE x Heatprimed x Treatment three-way interaction -----
+## Get averages and stats
+mmean.GHT <- emmeans(Model.all.logGHT, pairwise ~ Position | Treatment*Heatprimed, type = "response")
+letters.GHT <- multcomp::cld(mmean.GHT, alpha = 0.05, Letters = letters, order = TRUE) # get CLD
+letters.GHT <- letters.GHT %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+## Plot
+ggplot(data = letters.GHT, aes(y = response, x = Treatment, fill = Position, pattern = Heatprimed,
+                                  pattern_spacing = Heatprimed, pattern_density = Heatprimed))+
+  geom_col_pattern(stat = "identity", position = position_dodge(.9), width = .85, 
+                   pattern_colour = 'black', pattern_fill = 'black', colour = 'black')+
+  facet_grid(rows=vars(Heatprimed))+
+  scale_y_continuous(expand = c(0, 0), breaks = c(0, 40, 80, 120, 160), limits = c(0, 180))+
+  geom_hline(yintercept=90, linetype="twodash", color = "#f38aff", size = 0.55)+
+  geom_hline(yintercept=150, linetype="dotted", color = "#f38aff", size = 0.75)+
+  scale_pattern_manual(values = c("none", "circle"))+
+  scale_pattern_spacing_manual(values = c(0.99, 0.02))+
+  scale_pattern_density_manual(values = c(0.1,  0.2))+
+  labs(y = expression(paste("SGR (", d^-1,")")), x = "", fill = "Genotype")+
+  #scale_y_continuous(expand = c(0, 0), limits = c(-0.002, 0.019))+
+  geom_errorbar(aes(ymin = response - (1*SE), ymax = response + (1*SE)), width=.1, position=position_dodge(.9))+
+  geom_text(data = letters.GHT, aes(x = Treatment, y = response + 1*SE, vjust = -0.4, label = .group), 
+            size = 3.5, fontface = "bold", position=position_dodge(.9))+
+  guides(pattern = "none", pattern_spacing = "none", pattern_density = "none")+
+  guides(fill = guide_legend(override.aes = list(pattern = c("none"))))+
+  theme(
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.spacing = unit(0.5, "lines"),
+    panel.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.1),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(size = 9, face = "bold", vjust = 0.5),
+    axis.title.y = element_text( size = 11, vjust = 1),
+    axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
+    strip.text = element_text(size = 11),
+    legend.key.width = unit(0.5, "cm"),
+    legend.key.height =  unit(0.5, "cm"),
+    legend.key.spacing.y = unit(0.1, "cm"))
+ggsave("Bleaching_Genotype x Treatment x Heatprimed.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
+
+
 
 ```
+# Correlation analysis
+```{r correlation analysis}
+
+# Subset data to select bleaching response during peak natural heatwave (start of May) only
+df5.nat <- subset(df4.bright, Date_days == 50 & Heatprimed == "Heat primed")
+df5.nat$finder <- paste(df5.nat$Structure, df5.nat$Position, sep = ".")
+df5.nat <- dplyr::select(df5.nat, c("finder", "Brightness"))
+names(df5.nat)[names(df5.nat) == "Brightness"] <- "Brightness (natural bleaching)"
+
+# Get data on initial priming response
+## Load data
+df5.prime <- read_excel("Raw data/Bleaching (ImageJ).xlsx")
+
+## Select recovery dataset, because bleaching response only started to become visual there
+df5.prime <- subset(df5.prime, Experiment == "Intertidal 2020 (acute recovery)")
+df5.prime <- dplyr::select(df5.prime, -c("Location", "Species", "Origin"))
+
+## Wide to long
+df5.prime <- as.data.frame(long_panel(df5.prime, prefix = "_", begin = 0, end = 16, label_location = "end", check.varying = FALSE))
+df5.prime <- df5.prime %>% drop_na(Date) # Delete empty data rows
+
+## Select only fragments with live tissue cover of >20% to reliably quantify fragments' brightness, thus also exclude missing frags
+df5.prime <- subset(df5.prime, Survival >= 20)
+
+## Set bleaching status based on comments and info
+df5.prime$Cause <- tolower(df5.prime$Cause) 
+df5.prime$Comments <- tolower(df5.prime$Comments)
+df5.prime$Status <- ifelse(grepl("healthy", df5.prime$Comments), "Healthy",
+                    ifelse(grepl("pale", df5.prime$Comments), "Pale",
+                    ifelse(grepl("bleach", df5.prime$Comments), "Bleached", "Other")))
+
+## Set treaments
+df5.prime$Treatment <- ifelse(df5.prime$Treatment == "IntToInt", "II",
+                       ifelse(df5.prime$Treatment == "IntToSub", "IS",       
+                       ifelse(df5.prime$Treatment == "SubToInt", "SI",       
+                       ifelse(df5.prime$Treatment == "SubToSub", "SS", "Other"))))   
+
+## Cleanup
+df5.prime <- dplyr::select(df5.prime, c("id", "wave", "Structure", "Position", "Treatment",
+                                        "Date", "AVG", "ControlAVG", "Status", "Comments"))
+
+## Correct brightness values for variations in background lightening, using white (255) reference slate values
+###! Change correction from 1.7 (255/150) to 3.4 (255/75) to compensate for very dark reference values
+df5.prime$ControlAVG <- df5.prime$ControlAVG/1.7 * 3.4
+###! Set a few reference values higher than 255 to 255
+df5.prime$ControlAVG <- ifelse(df5.prime$ControlAVG > 255, 255, df5.prime$ControlAVG)
+### Correct brightness using reference slate
+df5.prime$Brightness <- (df5.prime$AVG/df5.prime$ControlAVG)*255
+###! Set fragment values higher than 255 to 255
+df5.prime$Brightness <- ifelse(df5.prime$Brightness > 255, 255, df5.prime$Brightness)
+
+## Get indication of Paling/Bleaching threshold
+df5.prime.Status <- data_summary(df5.prime, varname = "Brightness", groupnames = c("Status"))
+
+## To wide format
+df5.prime <- reshape(df5.prime, idvar = c("id", "Structure", "Position", "Treatment"), timevar = "wave", direction = "wide") 
+
+## Calculate averages or max
+###! Decision to opt for max brightness value over 4-day recovery period, as deemed more representative than the average
+df5.prime <- df5.prime %>% mutate(Brightness.max = pmax(Brightness.0, Brightness.1, Brightness.2, Brightness.3, Brightness.4,
+                                                        na.rm = TRUE))
+## Cleanup
+df5.prime <- dplyr::select(df5.prime, c("Treatment", "Structure", "Position", "Brightness.max"))
+
+## Get indication of Treatment and Genotype differences
+df5.prime.Treatment <- data_summary(df5.prime, varname = "Brightness.max", groupnames = c("Treatment"))
+df5.prime.Genotype <- data_summary(df5.prime, varname = "Brightness.max", groupnames = c("Treatment", "Position"))
+
+# Correlate max prime bleaching values against max natural bleaching values, by treatment
+## Clean data
+df5.prime$finder <- paste(df5.prime$Structure, df5.prime$Position, sep = ".")
+names(df5.prime)[names(df5.prime) == "Brightness.max"] <- "Brightness (priming)"
+
+## Merge datasets
+df5.complete <- left_join(df5.prime, df5.nat, by = "finder")
+
+##! Keep dead fragments as NA (alternative: set them to 0 brightness)
+df5.complete$`Brightness (natural bleaching)`[is.na(df5.complete$`Brightness (natural bleaching)`)] <- NA
+df5.complete <- na.omit(df5.complete)
+
+## Cleanup
+df5.cors <- dplyr::select(df5.complete, c("Treatment", `Brightness (priming)`, `Brightness (natural bleaching)`))
+df5.cors$Treatment <- as.factor(df5.cors$Treatment)
+
+## Do correlations, split per Treatment
+### Initialize
+results <- list()
+
+### Loop through each treatment and calculate correlation
+for(treatment in unique(df5.cors$Treatment)) {
+  subset_data <- df5.cors %>% filter(Treatment == treatment)
+  corr_test <- cor.test(subset_data$`Brightness (priming)`, subset_data$`Brightness (natural bleaching)`)
+  results[[treatment]] <- list(
+    Treatment = treatment,
+    Correlation = corr_test$estimate,
+    P_value = corr_test$p.value
+  )
+}
+
+### Convert list to dataframe for easier viewing
+results_df <- do.call(rbind, lapply(results, as.data.frame))
+
+## Plot
+ggplot(df5.complete, aes(x = `Brightness (priming)`, y = `Brightness (natural bleaching)`, colour = Treatment))+
+  geom_point(size = 5)+
+  scale_color_manual(values = colours)+
+  geom_hline(yintercept=90, linetype="twodash", color = "#f38aff", size = 0.55)+
+  geom_hline(yintercept=150, linetype="dotted", color = "#f38aff", size = 0.75)+
+  geom_vline(xintercept=90, linetype="twodash", color = "#f38aff", size = 0.55)+
+  geom_vline(xintercept=150, linetype="dotted", color = "#f38aff", size = 0.75)+
+  scale_y_continuous(expand = c(0,0), limits=c(0, 200))+
+  scale_x_continuous(expand = c(0,0), limits=c(0, 200))+
+  geom_smooth(  method = "lm", se = F, size = 1.2, fullrange = TRUE)+ 
+  theme(
+    text = element_text(size = 16),
+    axis.title.x = element_text(color = "black", size = 14, vjust = 2),
+    axis.text.x = element_text(angle = 0, size = 14, face = "bold", vjust=0),
+    axis.title.y = element_text(color = "black", size = 14, vjust = 2),
+    axis.text.y = element_text(angle = 0, size = 14, face = "bold", vjust=0),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    axis.line = element_line(size = 0.5, colour = "Black", linetype = 1),
+    panel.border = element_rect(colour = "white", fill = NA, size = 0.5),
+    legend.key = element_rect(fill = "#FFFFFF"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(colour = "#FCFCFC", size = 0.1))
+ggsave("Bleaching_Correlation primed x natural bleaching.tiff", width = 18, height = 13, units = "cm", dpi=1200, compression = "lzw")
+
+```
+
+
+
 
 # Check packages used
 ```{r}

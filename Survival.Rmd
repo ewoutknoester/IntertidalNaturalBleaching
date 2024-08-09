@@ -5,37 +5,28 @@ date: "13 June 2021"
 output: html_document
 ---
 
+#TODO: start with SGR analysis
+
 # Setup and data import
 ```{r setup, include = "FALSE", message = "FALSE", warning = FALSE}
 
 rm(list=ls()) # Clear workspace
 knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for all subsequent chunks
+options(scipen = 50) # Have all numbers in non-scientific notation
 
 library(readxl)
+library(betareg) # Beta regression
+library(ggpattern)
+library(ggh4x) # Minor blank ticks ggplot
 library(tidyverse)
 library(stringr) # remove spaces
 library(rstatix)
 library(ggpubr)
+library(panelr) # Wide to long
 library(nlme) # mixed models allowing for heterogeneity
 library(multcomp) # add significance levels to plot
 library(emmeans) # Pairwise comparisons
 library(NCmisc) # Check packages used
-
-#library(lattice)
-#library(lme4)
-#library(fitdistrplus)
-#library(lmerTest)
-#library(car)
-#library(grid)
-
-# load first xls sheet
-survival.raw <- read_excel("ImageJ_R.xlsx", sheet = 1)
-
-# combining next sheets of excel file (each structure had its own sheet)
-for (i in 2:36) {
-  temp <- read_excel("ImageJ_R.xlsx", sheet = i)
-  survival.raw <- rbind(survival.raw, temp)
-}
 
 # Function to facilitate averaging a dataset
 data_summary <- function(data, varname, groupnames){
@@ -56,244 +47,636 @@ data_summary <- function(data, varname, groupnames){
 <!-- 
 Data info:
 Treatments example: IntToSub = Coral of Intertidal origin, grown in the Subtidal
+Half of corals were heatshocked for 5 days somewhere between Nov 26 and Dec 19
 Survival = Cover of live coral tissue per fragment
 AVG Survival = Average per 8 fragments (Structure)
 Diff Survival = Difference between End and Start (= 2020-03-12) survival
 -->
 
 # Data preparation
-```{r data prep, include = "FALSE", message = "FALSE"}
+```{r data prep, include = "FALSE", message = "FALSE", warning = "FALSE"}
 
-# check missing data: much more frags missing in the subtidal
-survival.raw %>%
-  group_by(Treatment) %>%
-  summarize(Sum_Missing = sum(`Cause of death` == "Missing", na.rm = TRUE))
+# Load data
+df0.raw <- read_excel("Raw data/Coral growth - experiments.xlsx", sheet = "DATA")
 
-# Set survival to 0 when missing (because most likely died, then went missing):
-survival.raw <- within(survival.raw, `Survival (%)`[`Cause of death` == 'Missing'] <- 0)
+# Select data
+df0.raw <- subset(df0.raw, Experiment == "Intertidal 2020")
+df0.raw <- dplyr::select(df0.raw, -c("Experiment", "Location", "Position", "Species", "Origin"))
 
-# Select relevant columns
-my_data.S <- survival.raw[c(1,2,3, 4,17)]
+# Rename columns
+names(df0.raw)[names(df0.raw) == "Type"] <- "Treatment"
+names(df0.raw)[names(df0.raw) == "Comments_General"] <- "Heatprimed"
 
-# turn dates into number of days from start (07/02/2020)
-startdate <- as.Date("2020-02-07", "%Y-%m-%d")
-my_data.S$Date_days <- as.numeric(difftime(my_data.S$Date, startdate, units = "days"), units = "days")
+# Set heatprimed
+df0.raw$Heatprimed <- ifelse(grepl("stress", df0.raw$Heatprimed), "Heat primed", "Control")
+df0.raw$Heatprimed <- as.factor(df0.raw$Heatprimed)
+df0.raw$Treatment <- as.factor(df0.raw$Treatment)
+df0.raw$Structure <- as.factor(df0.raw$Structure)
 
-# change headers of column Survival
-my_data.S = my_data.S %>% dplyr::rename(Survival = `Survival (%)`)
+# Calculate SGRs (skipping first Oct [unbalanced data that month] and Nov [very close to Dec measurements])
+## Dec - Mar
+df0.raw$SGR_2 <- log(df0.raw$EV_2/df0.raw$EV_1)/as.numeric(as.Date(as.character(df0.raw$Date_2), 
+                       format="%Y-%m-%d") - as.Date(as.character(df0.raw$Date_1), format="%Y-%m-%d"))
+## Mar - Jul
+df0.raw$SGR_3 <- log(df0.raw$EV_3/df0.raw$EV_2)/as.numeric(as.Date(as.character(df0.raw$Date_3), 
+                       format="%Y-%m-%d") - as.Date(as.character(df0.raw$Date_2), format="%Y-%m-%d"))
+## Jul - Dec
+df0.raw$SGR_5 <- log(df0.raw$EV_5/df0.raw$EV_3)/as.numeric(as.Date(as.character(df0.raw$Date_5), 
+                       format="%Y-%m-%d") - as.Date(as.character(df0.raw$Date_3), format="%Y-%m-%d"))
+## Overall (put in first empty columns)
+df0.raw$Date_7 <- "9999-09-09"
+df0.raw$SGR_7 <- log(df0.raw$EV_5/df0.raw$EV_1)/as.numeric(as.Date(as.character(df0.raw$Date_5), 
+                       format="%Y-%m-%d") - as.Date(as.character(df0.raw$Date_1), format="%Y-%m-%d"))
+# End survival
+df0.raw$Condition_7 <- df0.raw$Condition_5 # Using December values (1 year)
+df0.raw$Cause_7 <- df0.raw$Cause_5
 
-# Make treatment a factor
-my_data.S$Treatment <- as.factor(my_data.S$Treatment)
+# End volume
+df0.raw$EV_7 <- df0.raw$EV_5
+df0.raw$EV_7 <- ifelse(df0.raw$Cause_7 == "Dead" & !is.na(df0.raw$Cause_7), 0, df0.raw$EV_7) # Set volume of dead frags to 0
+df0.raw$EV_7 <- df0.raw$EV_7 - df0.raw$EV_1 # Calculate EV increase as absolute increase in volume (cm3)
 
-# Removing 07/02 (different reference slate) and 11/05 (bad viz, few data) because of inaccurate measurements
-my_data.S1 <- my_data.S[!(my_data.S$Date_days == "0" | my_data.S$Date_days == "94"),]
+# Exclude fragments that were clearly impacted before the start of the experiment
+df1.clean <- subset(df0.raw,  is.na(Condition_0) | Condition_0 >= 80) # Exclude (12) fragments that started unhealthy already
+df1.clean <- subset(df1.clean,  is.na(Cause_0) | !Cause_0 == "Exclude") # 1 fragment of the wrong species (Stylophora)
+df1.clean <- subset(df1.clean,  is.na(Cause_1) | !Cause_1 == "Exclude") # 1 fragment that was heavily predated
+df1.clean <- subset(df1.clean,  (is.na(Condition_0) & Condition_1  >= 80) | !is.na(Condition_0)) # 3 unhealthy fragments 2nd batch
 
-# get insight into NAs
-my_data.S1 %>%
-  group_by(Treatment) %>%
-  summarize(Sum_NA = sum(is.na(Survival)))
+# Inspect unhealthy start fragments in December (to see if heat priming was actually sublethal and not lethal)
+deadstart <- subset(df1.clean, Condition_1 < 80)
+deadstart <- subset(deadstart, is.na(Cause_1) | !Cause_1 == "Missing")
+deadstart <- dplyr::select(deadstart, c("Treatment", "Heatprimed", "Condition_1"))
+summary(deadstart) # Roughly equal amount of bad start fragments at control, so unlikely caused by heatpriming itself
+df1.clean <- subset(df1.clean,  is.na(Condition_1) | Condition_1 >= 80) # So exclude these unhealthy starts
+rm(deadstart)
 
-# removing rows containing NAs (often NA because of missing picture, thus not mortality)
-my_data.S2 <- na.omit(my_data.S1)
+# Inspect missing fragments
+missing <- subset(df1.clean, Cause_5 == "Missing")
+missing <- dplyr::select(missing, c("Treatment", "Heatprimed", "Cause_5"))
+summary(missing) # 15 frags missing from Subtidal and only 4 from Intertidal: check if this matches mortality ratios
+rm(missing) # TODO: If it matches mortality ratios, missing fragments most likely also died before going missing, and better be kept
+
+# Wide to long
+df2.clean <- as.data.frame(long_panel(df1.clean, prefix = "_", begin = 0, end = 12, label_location = "end", check.varying = F))
+names(df2.clean)[names(df2.clean) == "Condition"] <- "Survival"
+
+# Delete empty and unnecessary
+df2.clean <- df2.clean %>% drop_na(Date) # Delete empty measurement columns
+df2.clean <- subset(df2.clean, is.na(wave) | wave != 0) # Leave out initial Oct measurements (unbalanced start, full start in Dec)
+df2.clean <- subset(df2.clean, is.na(wave) | wave != 4) # Leave out Nov, because very close to the last measurement in Dec
+df2.clean <- subset(df2.clean, is.na(wave) | wave != 6) # Leave last Mar, because this was only a quick survival scoring 
+df2.clean <- dplyr::select(df2.clean, -c("id", "wave", "Length", "Width1", "Width2"))
+
+# Set days
+## Group over months for visualisation
+df2.clean$Date <- as.Date(as.POSIXct(df2.clean$Date, 'GMT'))
+df2.clean$Date <- as.Date(ifelse(df2.clean$Date == "2019-12-04", "2019-12-10",
+                          ifelse(df2.clean$Date == "2019-12-17", "2019-12-10",
+                          ifelse(df2.clean$Date == "2019-12-19", "2019-12-10", 
+                          ifelse(df2.clean$Date == "2020-03-16", "2020-03-11",       
+                          ifelse(df2.clean$Date == "2020-07-04", "2020-07-02", as.character(df2.clean$Date)))))))
+## Convert to days since start
+startdate <- as.Date("2019-12-10", "%Y-%m-%d")
+df2.clean$Date_days <- as.numeric(difftime(df2.clean$Date, startdate, units = "days"), units = "days")
+
+# Cleanup
+df2.clean$Comments <- tolower(df2.clean$Comments)
+df2.clean$Cause <- tolower(df2.clean$Cause)
+df2.clean <- subset(df2.clean, is.na(Cause) | Cause != "exclude") # Exclude a few fragments (mostly predation and sedimentation)
+#! Delete missing fragments: if this appears related to treatment (i.e. the fragments died first, then went missing) then keep
+df2.clean <- subset(df2.clean, is.na(Cause) | Cause != "missing")
+
+# Compare additional notations per fragment x timepoint (NB: these values contain repetitions of the same frags over time)
+## Compare necrosis
+necrosis <- subset(df2.clean, grepl("necrosis", df2.clean$Comments))
+summary(necrosis) # Necrosis happening more in subtidal, there equal in terms of origin. No difference heatshocked
+
+## Compare tunicate
+tunicate <- subset(df2.clean, grepl("tunicate", df2.clean$Comments))
+summary(tunicate) # Tunicates happening way more in subtidal, especially intertidal orgin. Happening way less for heatshocked
+
+## Compare crabs
+crabs <- subset(df2.clean, grepl("crab", df2.clean$Comments))
+summary(crabs) # Crabs by far most common in II and non-heatshocked corals
+
+# Create separate frames for survival, growth and EV
+## Survival
+df3.survival <- dplyr::select(df2.clean, c("Treatment", "Heatprimed", "Structure", "Date", "Date_days", "Survival"))
+df3.survival <- subset(df3.survival, Date < as.Date("2098-07-01")) # Remove double end survival
+
+## Growth
+df3.growth <- dplyr::select(df2.clean, c("Treatment", "Heatprimed", "Structure", "Date", "Date_days", "SGR", "Survival"))
+df3.growth <- subset(df3.growth, Survival >= 80) # For growth, only focus on healthy fragments
+df3.growth <- subset(df3.growth, Date > as.Date("2020-01-01")) # First date not needed after calculations
+df3.growth_avg <- subset(df3.growth, Date > as.Date("2098-01-01")) # Dataset with average growth 1 year
+df3.growth_avg <- dplyr::select(df3.growth_avg, -c("Date", "Date_days"))
+df3.growth <- subset(df3.growth, Date < as.Date("2098-01-01")) # Leave out average from main dataframe
+
+## EV
+df3.EV <- dplyr::select(df2.clean, c("Treatment", "Heatprimed", "Structure", "Date", "EV"))
+df3.EV <- subset(df3.EV, Date > as.Date("2098-01-01")) # Only keep EV increase (cm3 in 1 year)
+df3.EV <- dplyr::select(df3.EV, -c("Date"))
+
+# Set colours for treatments
+colours = c("#fcb500", "#c43d16", "#1353df", "#46b5ff")
+
+#TODO: continue here
+
+
+
+# Decide what to do with small start frags (<5 EV?)
+
+
+
+
+
+
 ```
 
-# Analysis
-## Data exploration and correction
-```{r data exp}
+# Survival analysis
+## Model 
+```{r survival model}
 
-# visualizing data with box plots: heterogeineity likely over Date and Treatment
-boxplot(Survival ~ Date, data = my_data.S2, xlab = "Date", ylab = "Live coral tissue (%)")
-boxplot(Survival ~ Treatment, data = my_data.S2, xlab = "Treatment", ylab = "Live coral tissue (%)")
+# TODO: incorporate autocorrelation to account for Date_days
 
-# normality tests: response data is bimodal (peaks at 0 and 100)
-ggqqplot(my_data.S2, x = "Survival")
-hist(my_data.S2$Survival)
+# --- Treatment * Heatprimed * Time model ---
+# Data prep
+## Get averages per structure, to reduce variation
+df4.survival.avg <- data_summary(df3.survival, varname="Survival", groupnames=c("Treatment","Heatprimed","Date_days", "Date", "Structure"))
+## Cleanup
+df4.survival.avg <- df4.survival.avg %>% dplyr::select(-c("sd", "se"))
+## Transform survival (%) into fraction to fit Betareg
+df4.survival.avg <- df4.survival.avg %>% mutate(Condition = Survival/100)
+## Re-scale so there are no 0 and 1 in the dataset (requirement beta models)
+df4.survival.avg <- df4.survival.avg %>% 
+  mutate(Condition = (Condition * (length(Condition) - 1) + 0.5) / length(Condition))
 
-# Averaging to approach normality
-my_data.Savg <- as.tbl(my_data.S2) %>% 
-  bind_rows(my_data.S2) %>% 
-  group_by(Structure, Treatment, Date_days) %>% 
-  summarise_all(c("mean"))
-my_data.Savg <- my_data.Savg[-c(4)]
+#! Remove one outlier from the dataset (st residual > 6: an IS structure that maintained very high survival to Dec [avg 75%])
+df4.survival.avg <- subset(df4.survival.avg, !(Date_days == 366 & Structure == 12))
 
-# Recheck data: approaching normality, but left tailed: add cube-root transformation
-boxplot(Survival^1/3 ~ Date, data = my_data.Savg, xlab = "Date", ylab = "Live coral tissue (%)^1/3")
-boxplot(Survival^1/3  ~ Treatment, data = my_data.Savg, xlab = "Treatment", ylab = "Live coral tissue (%)^1/3")
-hist(my_data.Savg$Survival^1/3)
+#! Keep t0 measurement, despite low variation
+#df4.survival.avg <- subset(df4.survival.avg, Date_days != 0)
 
-# Add survival column starting at 100, correcting for (large) differences in start survival
-my_data.Savg <- as.data.frame(append(my_data.Savg, list(Survival100 = ""), after = 5))
-for (s in 1:60){
-  for (i in c(153, 124, 113, 84, 76, 69, 62, 55, 48, 41, 34)){
-  my_data.Savg$Survival100[my_data.Savg$Structure == s & my_data.Savg$Date_days == i] <-  
-  my_data.Savg$Survival[my_data.Savg$Structure == s & my_data.Savg$Date_days == i] / 
-  my_data.Savg$Survival[my_data.Savg$Structure == s & my_data.Savg$Date_days == 34] * 100
-  }
-}
-my_data.Savg$Survival100 <- as.numeric(my_data.Savg$Survival100)
+# Modelling
+## Initial model
+surv.bm <- betareg(Condition ~ Treatment*Heatprimed*Date_days, data = df4.survival.avg)
 
-```
+## Substantial improvement residuals through three-way correction of heterogeneity for Treatment x Heatprimed x Days
+surv.bm_THD <- betareg(Condition ~ Treatment*Heatprimed*Date_days | Treatment*Heatprimed*Date_days, data = df4.survival.avg)
 
-## Corrected Survival100
-### Model selection
-```{r model selex (corrected)}
+emmip(surv.bm_THD,  Treatment ~ Date_days|Heatprimed, cov.reduce=range)
 
-# Using corrected survival data: start survival set to 100% because of large differences initial survival
-
-#TO DO: incorporate autocorrelation to account for Date_days
-#TO DO: change to beta regression, as dependent variable is a fraction
-
-# Full model with random structure for Date (using structure ID)
-ModS.cr <- lme(Survival100^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg)
-
-# Full model allowing heterogeneity
-ModS.cr2 <- lme(Survival100^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
-                      weights = varIdent(form = ~1|Date_days))
-ModS.cr3 <- lme(Survival100^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
-                      weights = varIdent(form = ~1|Treatment))
-lmc <- lmeControl(niterEM = 5200, msMaxIter = 5200) # more iterations to reach convergence
-ModS.cr4 <- lme(Survival100^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
-                      weights = varIdent(form = ~1|Treatment*Date_days), control = lmc)
-
-# Allowing Treatment*Date_days heterogeineity best choice, despite increase in df:
-AIC(ModS.cr, ModS.cr2, ModS.cr3, ModS.cr4)
-
-anova(ModS.cr4) # Interaction highly significant: final model
-summary(ModS.cr4)
-```
-
-### Model validation
-```{r model val (corrected)}
-
-mod <- ModS.cr4 # set model to be validated
-op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+## Model validation
+mod <- surv.bm_THD # set model to be validated
+op <- par(mfrow = c(2, 4), mar = c(5, 4, 1, 2)) # set layout of figure frame
 plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
 abline(0,0)
 hist(resid(mod, type = "pearson"), main = "") # histogram residuals
 qqnorm(resid(mod, type = "pearson")) # QQplot residuals
-plot(my_data.Savg$Date_days, resid(mod, type = "pearson")) # residuals split over Date
+plot(df4.survival.avg$Treatment, resid(mod, type = "pearson")) # residuals split over Date
 abline(0,0)
-plot(my_data.Savg$Treatment, resid(mod, type = "pearson")) # residuals split over Treatment
+plot(df4.survival.avg$Heatprimed, resid(mod, type = "pearson")) # residuals split over Treatment
 abline(0,0)
-plot(fitted(mod) ~ my_data.Savg$Survival) # response (log) data vs fitted (log)
+plot(as.factor(df4.survival.avg$Date_days), resid(mod, type = "pearson")) # residuals split over Treatment
+abline(0,0)
+plot(fitted(mod) ~ df4.survival.avg$Condition) # response data vs fitted
 par(op)
+
+## Ouput
+car::Anova(surv.bm_THD) # Highly sig three-way interaction
 
 ```
 
-### Post hoc and plots
+## Post hoc and plots
 ```{r post hoc (corrected)}
 
-colours = c("red", "cyan", "orange", "dodgerblue2") # set colours for the Treatments
+# ----- Treatment x Heatprimed x Date three-way interaction -----
+## Get average values
+Sum.THD <- data_summary(df4.survival.avg, varname = "Condition", groupnames = c("Date_days", "Treatment", "Heatprimed", "Date"))
+## Create unique Finder (Date:Treatment) and ID to sort data
+Sum.THD <- as.data.frame(append(Sum.THD, list(Finder = paste(Sum.THD$Date_days, Sum.THD$Treatment, Sum.THD$Heatprimed, sep = ":")), after = 0))
+Sum.HTD <- Sum.THD
 
-# Treatment|Date plot
-# Get average values, SD and SE of Bleaching split per Date and Treatment
-SumS <- data_summary(my_data.Savg, varname = "Survival100", groupnames = c("Date_days", "Treatment", "Date"))
-# Create unique Finder (Date:Treatment) and ID to sort data
-SumS <- as.data.frame(append(SumS, list(Finder = paste(SumS$Date_days, SumS$Treatment, sep = ":")), after = 0))
-SumS <- tibble::rownames_to_column(SumS, "ID") # create ID from rownames
+mtrend_THD <- emtrends(surv.bm_THD, pairwise ~ Treatment|Heatprimed, var = "Date_days")
+letters.THD <- multcomp::cld(mtrend_THD, alpha = 0.05, Letters = letters, order = TRUE) # get CLD
+letters.THD <- letters.THD %>% mutate(.group = str_squish(.group)) # remove white spaces
 
-# Perform post hoc and get significance letters (Compact Letter Display) between Treatments
-cr4.t <- emtrends(ModS.cr4, "Treatment", var = "Date_days")
-pairs(cr4.t) # get p-values
-letters.cr4 <- multcomp::cld(cr4.t, alpha = 0.05, Letters = letters, order = TRUE) # get CLD
-letters.cr4
-letters.cr4 <- letters.cr4 %>% mutate(.group = str_squish(.group)) # remove white spaces
+siglets.THD <- dplyr::select(letters.THD, c("Treatment", "Heatprimed", ".group"))
+names(siglets.THD)[3] <- "Letter"
+siglets.THD$Finder <- paste("366", siglets.THD$Treatment, siglets.THD$Heatprimed, sep = ":")
+siglets.THD <- dplyr::select(siglets.THD, c("Finder", "Letter"))
+siglets.THD <- left_join(siglets.THD, Sum.THD)
 
-siglets <- as.data.frame(letters.cr4$.group)
-names(siglets)[1] <- "Letter"
-siglets$Treatment <- letters.cr4$Treatment
-siglets <- siglets[order(siglets$Treatment),]
-
-# Line plot
-ggplot(data = SumS, aes(Date, y = Survival100, fill = Treatment, color = Treatment))+
-  geom_point(size = 3, aes(color = Treatment)) + scale_color_manual(values=colours)+
+## Line plot
+ggplot(data = Sum.THD, aes(x = Date, y = Condition, fill = Treatment, color = Treatment))+
+  facet_grid(rows=vars(Heatprimed))+
+  geom_errorbar(aes(ymin = Condition - (1*se), ymax = Condition + (1*se)), width=.1, position=position_dodge(.9))+
+  geom_smooth(method = "lm", aes(linewidth = Heatprimed), color = "black", se = F)+ 
+  scale_linewidth_manual(values = c(0, 1.5))+
   geom_smooth(method = "lm", se = FALSE, aes(fill = Treatment))+
-  labs(y = "Corrected live coral tissue (%)", x = "Date")+
-  geom_errorbar(aes(ymin = Survival100 - (1*se), ymax = Survival100 + (1*se)), width=.1,
-                position=position_dodge(.9))+
-  annotate(geom = "text", x = as.POSIXct("2020-07-15", format = "%Y-%m-%d"), y = SumS[SumS$Date_days == 153, 6]+c(3.5,0,1,5), label = siglets$Letter, fontface = "bold")
+  scale_color_manual(values=colours)+
+  scale_fill_manual(values = colours)+
+  scale_shape_manual(values = c(24,25,25,24))+
+  geom_point(stroke = rep(c(0,1), times = 16), colour = "black", aes(size = Heatprimed, shape = Treatment, fill = Treatment))+
+  scale_size_manual(values = c(3, 2))+
+  labs(y = "Fraction live coral tissue", x = "")+
+  scale_y_continuous(expand = c(0, 0), breaks = c(0, 0.25, 0.50, 0.75, 1.0), limits = c(0, 1.1))+
+  scale_x_date(labels = scales::date_format("%b"),
+               limits = c(as.Date("2019-12-10"), as.Date("2020-12-22")),
+               breaks = seq(min(as.Date("2020-01-01")), max(as.Date("2021-01-01")), by = "3 months"),
+               minor_breaks = seq(min(as.Date("2019-12-01")), max(as.Date("2021-01-01")), by = "1 month"),
+               guide = "axis_minor")+
   
-ggsave("Survival100.png", width = 23, height = 10, units = "cm")
+  geom_text(data = siglets.THD, aes(x = as.Date("2020-12-21", format = "%Y-%m-%d"), y = Condition, label = Letter),
+            size = 3.6, fontface = "bold")+
+    guides(linewidth = "none", colour = "none", size = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3.5, stroke = 0, colour = colours)))+
+  theme(
+    panel.spacing.y = unit(2, "lines"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.1),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    ggh4x.axis.ticks.length.minor = rel(1),
+    axis.text.x = element_text(size = 9, face = "bold", vjust = 0.5),
+    axis.title.y = element_text( size = 11, vjust = 2),
+    axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
+    strip.text = element_text(size = 11))
+ggsave("Survival_Condition_Treatment by Heatprimed and Date.png", width = 23, height = 10, units = "cm")
+
+# ----- Heatprimed x Treatment x Date three-way interaction -----
+## Get average values
+mtrend_HTD <- emtrends(surv.bm_THD, pairwise ~ Heatprimed|Treatment, var = "Date_days")
+letters.HTD <- multcomp::cld(mtrend_HTD, alpha = 0.05, Letters = letters, order = TRUE) # get CLD
+letters.HTD <- letters.HTD %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+siglets.HTD <- dplyr::select(letters.HTD, c("Treatment", "Heatprimed", ".group"))
+names(siglets.HTD)[3] <- "Letter"
+siglets.HTD$Finder <- paste("366", siglets.HTD$Treatment, siglets.HTD$Heatprimed, sep = ":")
+siglets.HTD <- dplyr::select(siglets.HTD, c("Finder", "Letter"))
+siglets.HTD <- left_join(siglets.HTD, Sum.HTD)
+
+#as.vector(sapply(colours, function(col) c(col, "black")))
+
+## Line plot
+ggplot(data = Sum.HTD, aes(x = Date, y = Condition))+
+  facet_grid(rows=vars(Treatment))+
+  geom_errorbar(aes(ymin = Condition - (2*se), ymax = Condition + (2*se), colour = Treatment),
+                width=.1, position=position_dodge(.9))+
+  geom_smooth(method = "lm", aes(linewidth = Heatprimed), color = "black", se = F)+ 
+  scale_linewidth_manual(values = c(0, 1.5))+
+  geom_smooth(method = "lm", se = F, aes( colour = Treatment, linetype = Heatprimed), linewidth = 0.8)+
+  scale_linetype_manual(values = c("solid", "solid"))+
+  geom_point(stroke = rep(c(0,1), times = 16),
+             aes( size = Heatprimed, shape = Treatment, fill = Treatment))+
+  scale_color_manual(values= colours)+
+  scale_fill_manual(values = colours)+
+  scale_size_manual(values = c(3, 2))+
+  scale_shape_manual(values = c(24,25,25,24))+
+  labs(y = "Fraction live coral tissue", x = "")+
+  scale_y_continuous(expand = c(0, 0), breaks = c(0, 0.25, 0.50, 0.75, 1.0), limits = c(0, 1.1))+
+  scale_x_date(labels = scales::date_format("%b"),
+               limits = c(as.Date("2019-12-10"), as.Date("2020-12-22")),
+               breaks = seq(min(as.Date("2020-01-01")), max(as.Date("2021-01-01")), by = "3 months"),
+               minor_breaks = seq(min(as.Date("2019-12-01")), max(as.Date("2021-01-01")), by = "1 month"),
+               guide = "axis_minor")+
+  
+  geom_text(data = siglets.HTD, aes(x = as.Date("2020-12-21", format = "%Y-%m-%d"), y = Condition, label = Letter),
+            size = 3.6, fontface = "bold")+
+  theme(
+    panel.spacing.y = unit(2, "lines"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.1),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    legend.position="none",
+    ggh4x.axis.ticks.length.minor = rel(1),
+    axis.text.x = element_text(size = 9, face = "bold", vjust = 0.5),
+    axis.title.y = element_text( size = 11, vjust = 2),
+    axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
+    strip.text = element_text(size = 11))
+ggsave("Survival_Condition_Heatprimed by Treatment and Date.png", width = 23, height = 12, units = "cm")
+
+# ----- Heatprimed x Treatment two-way interaction -----
+## Get average values
+Sum.TH <- data_summary(df4.survival.avg, varname = "Condition", groupnames = c("Treatment", "Heatprimed"))
+## Create unique Finder (Date:Treatment) and ID to sort data
+Sum.TH <- as.data.frame(append(Sum.TH, list(Finder = paste(Sum.TH$Treatment, Sum.TH$Heatprimed, sep = ":")), after = 0))
+Sum.HT <- Sum.TH
+
+mmean.HT <- emmeans(surv.bm_THD, pairwise ~ Heatprimed|Treatment)
+letters.HT <- multcomp::cld(mmean.HT, alpha = 0.05, Letters = letters, order = TRUE) # get CLD
+letters.HT <- letters.HT %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+siglets.HT <- dplyr::select(letters.HT, c("Treatment", "Heatprimed", ".group"))
+names(siglets.HT)[3] <- "Letter"
+siglets.HT$Finder <- paste(siglets.HT$Treatment, siglets.HT$Heatprimed, sep = ":")
+siglets.HT <- dplyr::select(siglets.HT, c("Finder", "Letter"))
+siglets.HT <- left_join(siglets.HT, Sum.HT)
+
+## Plot
+ggplot(data = Sum.HT, aes(y = Condition, x = Treatment, pattern = Heatprimed, pattern_spacing = Heatprimed, 
+                          pattern_density = Heatprimed))+
+  geom_col_pattern(stat = "identity", position = position_dodge(.9), width = .83,
+      pattern_colour = 'black', pattern_fill = 'black', colour = 'black', fill = rep(colours,each=2), size = 1)+
+  scale_color_manual(values=colours)+
+  scale_pattern_manual(values = c("none", "circle"))+
+  scale_pattern_spacing_manual(values = c(0.99, 0.015))+
+  scale_pattern_density_manual(values = c(0.01,  0.2))+
+  labs(y = "Fraction live coral tissue", x = "Treatment", pattern = "", pattern_spacing = "", pattern_density = "")+
+  scale_y_continuous(expand = c(0, 0), breaks = c(0, 0.25, 0.50, 0.75, 1.0), limits = c(0,1.1))+
+  geom_errorbar(aes(ymin = Condition - (1*se), ymax = Condition + (1*se)), width=.1, position=position_dodge(.9))+
+  geom_text(data = siglets.HT, aes(x = Treatment, y = Condition + 1*se, vjust = -1, label = Letter), 
+            size = 4.5, fontface = "bold", position=position_dodge(.9))+
+  theme(
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.1),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(size = 9, face = "bold", vjust = 0.5),
+    axis.title.y = element_text( size = 11, vjust = 2),
+    axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
+    strip.text = element_text(size = 11),
+    legend.key.width = unit(0.7, "cm"),
+    legend.key.height =  unit(0.7, "cm"),
+    legend.key.spacing.y = unit(0.1, "cm"))
+ggsave("Survival_Condition_Heatprimed by Treatment.png", width = 23, height = 10, units = "cm")
+
+# ----- Treatment x Heatprimed two-way interaction -----
+## Get average values
+mmean.TH <- emmeans(surv.bm_THD, pairwise ~ Treatment|Heatprimed)
+letters.TH <- multcomp::cld(mmean.TH, alpha = 0.05, Letters = letters, order = TRUE) # get CLD
+letters.TH <- letters.TH %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+## Plot
+ggplot(data = letters.TH, aes(y = emmean, x = Treatment,  fill = Treatment, pattern = Heatprimed, pattern_spacing = Heatprimed, 
+                          pattern_density = Heatprimed))+
+  geom_col_pattern(stat = "identity", position = position_dodge(.9), width = .85,
+      pattern_colour = 'black', pattern_fill = 'black', colour = 'black')+
+  scale_fill_manual(values=colours)+
+  facet_grid(rows=vars(Heatprimed))+
+  scale_pattern_manual(values = c("none", "circle"))+
+  scale_pattern_spacing_manual(values = c(0.99, 0.03))+
+  scale_pattern_density_manual(values = c(0.01,  0.2))+
+  labs(y = "Fraction live coral tissue", x = "Treatment", pattern = "", pattern_spacing = "", pattern_density = "")+
+  scale_y_continuous(expand = c(0, 0), breaks = c(0, 0.25, 0.50, 0.75, 1.0), limits = c(0,1.1))+
+  geom_errorbar(aes(ymin = emmean - (1*SE), ymax = emmean + (1*SE)), width=.1, position=position_dodge(.9))+
+  geom_text(data = letters.TH, aes(x = Treatment, y = emmean + 1*SE, vjust = -1, label = .group), 
+            size = 4.5, fontface = "bold", position=position_dodge(.9))+
+  theme(
+    panel.spacing.y = unit(2, "lines"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.background = element_rect(fill = "#FFFFFF"),
+    legend.position="none",
+    panel.grid.major = element_line(colour = "#797979", size = 0.1),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(size = 9, face = "bold", vjust = 0.5),
+    axis.title.y = element_text( size = 11, vjust = 2),
+    axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
+    strip.text = element_text(size = 11))
+ggsave("Survival_Condition_Treatment by Heatprimed.png", width = 9, height = 10, units = "cm")
+
+
+
+
+
+
+
 
 ```
 
-## Original Survival
-### Model selection
-```{r model selex (original)}
-# Full model with random structure for Date (using structure ID)
-ModS.cr <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg)
+# SGR analysis
+## Model selection
+```{r SGR model}
 
-# Full model allowing heterogeneity
-ModS.cr2 <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
-                      weights = varIdent(form = ~1|Date_days))
-ModS.cr3 <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
-                      weights = varIdent(form = ~1|Treatment))
-lmc <- lmeControl(niterEM = 5200, msMaxIter = 5200) # more iterations to reach convergence
-ModS.cr4 <- lme(Survival^1/3 ~ Treatment*Date_days, random = ~1|Structure, data = my_data.Savg,
-                      weights = varIdent(form = ~1|Treatment*Date_days), control = lmc)
+# Data prep
+df3.growth$Date_period <- as.factor(ifelse(df3.growth$Date == "2020-03-11", "Dec-Mar",
+                          ifelse(df3.growth$Date == "2020-07-02", "Mar-Jul", "Jul-Dec")))
+df3.growth$Date_period <- ordered(df3.growth$Date_period, levels = c("Dec-Mar", "Mar-Jul", "Jul-Dec"))
 
-# Allowing Treatment*Date_days heterogeineity best choice, despite increase in df:
-AIC(ModS.cr, ModS.cr2, ModS.cr3, ModS.cr4)
+# Model
+## Random factor to account for non-independence of multiple coral fragments in same nursery Structure
+lme.sgr <- lme(SGR ~ Treatment*Heatprimed*Date_period, random = ~1 | Structure, data = df3.growth) 
 
-anova(ModS.cr4) # Interaction highly significant: final model
-summary(ModS.cr4)
-```
+## Allowing for heterogeneity among Species (showed best residuals of all Species * Size * Treatment combis)
+lme.sgr.TD <- lme(SGR ~ Treatment*Heatprimed*Date_period, random = ~1 | Structure, 
+                  data = df3.growth, weights = varIdent(form = ~1 | Treatment*Date_period))
 
-### Model validation
-```{r model val (original)}
-
-mod <- ModS.cr4 # set model to be validated
-op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+# Model validation
+mod <- lme.sgr.TD # set model to be validated
+op <- par(mfrow = c(2, 4), mar = c(5, 4, 1, 2)) # set layout of figure frame
 plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
 abline(0,0)
 hist(resid(mod, type = "pearson"), main = "") # histogram residuals
 qqnorm(resid(mod, type = "pearson")) # QQplot residuals
-plot(my_data.Savg$Date_days, resid(mod, type = "pearson")) # residuals split over Date
+plot(df3.growth$Treatment, resid(mod, type = "pearson")) # residuals split over Date
 abline(0,0)
-plot(my_data.Savg$Treatment, resid(mod, type = "pearson")) # residuals split over Treatment
+plot(df3.growth$Heatprimed, resid(mod, type = "pearson")) # residuals split over Treatment
 abline(0,0)
-plot(fitted(mod) ~ my_data.Savg$Survival) # response (log) data vs fitted (log)
+plot(df3.growth$Date_period, resid(mod, type = "pearson")) # residuals split over Treatment
+abline(0,0)
+plot(fitted(mod) ~ df3.growth$SGR) # response data vs fitted
 par(op)
 
-```
-
-### Post hoc and plots
-```{r post hoc (original)}
-
-colours = c("red", "cyan", "orange", "dodgerblue2") # set colours for the Treatments
-
-# Treatment|Date plot
-# Get average values, SD and SE of Bleaching split per Date and Treatment
-SumS <- data_summary(my_data.Savg, varname = "Survival", groupnames = c("Date_days", "Treatment", "Date"))
-# Create unique Finder (Date:Treatment) and ID to sort data
-SumS <- as.data.frame(append(SumS, list(Finder = paste(SumS$Date_days, SumS$Treatment, sep = ":")), after = 0))
-SumS <- tibble::rownames_to_column(SumS, "ID") # create ID from rownames
-
-# Perform post hoc and get significance letters (Compact Letter Display) between Treatments
-cr4.t <- emtrends(ModS.cr4, "Treatment", var = "Date_days")
-pairs(cr4.t) # get p-values
-letters.cr4 <- multcomp::cld(cr4.t, alpha = 0.05, Letters = letters, order = TRUE) # get CLD
-letters.cr4
-letters.cr4 <- letters.cr4 %>% mutate(.group = str_squish(.group)) # remove white spaces
-
-siglets <- as.data.frame(letters.cr4$.group)
-names(siglets)[1] <- "Letter"
-siglets$Treatment <- letters.cr4$Treatment
-siglets <- siglets[order(siglets$Treatment),]
-
-# Line plot
-ggplot(data = SumS, aes(Date, y = Survival, fill = Treatment, color = Treatment))+
-  geom_point(size = 3, aes(color = Treatment)) + scale_color_manual(values=colours)+
-  geom_smooth(method = "lm", se = FALSE, aes(fill = Treatment))+
-  labs(y = "Corrected live coral tissue (%)", x = "Date")+
-  geom_errorbar(aes(ymin = Survival - (1*se), ymax = Survival + (1*se)), width=.1,
-                position=position_dodge(.9))+
-  annotate(geom = "text", x = as.POSIXct("2020-07-15", format = "%Y-%m-%d"), y = SumS[SumS$Date_days == 153, 6]+c(3.5,0,2,2), label = siglets$Letter, fontface = "bold")
-  
-ggsave("Survival.png", width = 23, height = 10, units = "cm")
+# Model output
+Anova(lme.sgr.TD) # Three-way interaction highly significant
 
 ```
+## Post hoc and plots
+```{r SGR plots}
 
+# ----- Treatment x Heatprimed x Date three-way interaction plot -----
+## Get average values
+SumSGR.THD <- data_summary(df3.growth, varname = "SGR", groupnames = c("Treatment", "Heatprimed", "Date_period"))
+## Create unique Finder (Date:Treatment) and ID to sort data
+SumSGR.THD <- as.data.frame(append(SumSGR.THD, list(Finder = paste(SumSGR.THD$Treatment, SumSGR.THD$Heatprimed, SumSGR.THD$Date_period, sep = ":")), after = 0))
+
+mmeanSGR.THD <- emmeans(lme.sgr.TD, pairwise ~ Treatment|Date_period|Heatprimed)
+lettersSGR.THD <- multcomp::cld(mmeanSGR.THD, alpha = 0.05, Letters = letters, order = TRUE) # get CLD
+lettersSGR.THD <- lettersSGR.THD %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+## Plot
+ggplot(data = lettersSGR.THD, aes(y = emmean, x = Date_period, fill = Treatment, pattern = Heatprimed,
+                                  pattern_spacing = Heatprimed, pattern_density = Heatprimed))+
+  geom_col_pattern(stat = "identity", position = position_dodge(.9), width = .85, 
+                   pattern_colour = 'black', pattern_fill = 'black', colour = 'black')+
+  facet_grid(rows=vars(Heatprimed))+
+  scale_fill_manual(values=colours)+
+  scale_pattern_manual(values = c("none", "circle"))+
+  scale_pattern_spacing_manual(values = c(0.99, 0.03))+
+  scale_pattern_density_manual(values = c(0.1,  0.2))+
+  labs(y = expression(paste("SGR (", d^-1,")")), x = "")+
+  scale_y_continuous(expand = c(0, 0), limits = c(-0.002, 0.019))+
+  geom_errorbar(aes(ymin = emmean - (1*SE), ymax = emmean + (1*SE)), width=.1, position=position_dodge(.9))+
+  geom_text(data = lettersSGR.THD, aes(x = Date_period, y = emmean + 1*SE, vjust = -1, label = .group), 
+            size = 4.5, fontface = "bold", position=position_dodge(.9))+
+  guides(pattern = "none", pattern_spacing = "none", pattern_density = "none")+
+  guides(fill = guide_legend(override.aes = list(pattern = c("none"))))+
+  theme(
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.1),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(size = 9, face = "bold", vjust = 0.5),
+    axis.title.y = element_text( size = 11, vjust = 1),
+    axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
+    strip.text = element_text(size = 11),
+    legend.key.width = unit(0.5, "cm"),
+    legend.key.height =  unit(0.5, "cm"),
+    legend.key.spacing.y = unit(0.1, "cm"))
+ggsave("Survival_SGR_Treatment x Heatprimed x Date.png", width = 23, height = 10, units = "cm")
+
+# ----- Heatprimed x Treatment x Date three-way interaction plot -----
+## Get average values
+mmeanSGR.HTD <- emmeans(lme.sgr.TD, pairwise ~ Heatprimed|Date_period|Treatment)
+lettersSGR.HTD<- multcomp::cld(mmeanSGR.HTD, alpha = 0.05, Letters = letters, order = TRUE) # get CLD
+lettersSGR.HTD <- lettersSGR.HTD %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+## Whole bunch of stuff to transform letters to an asterisk (only works if there are only two letters: a and b)
+lettersSGR.HTD <- as.data.frame(append(lettersSGR.HTD,
+                 list(wave = ifelse(lettersSGR.HTD$Heatprimed == "Control", 1, 2)), after = 0))
+lettersSGR.HTD <- lettersSGR.HTD[order(lettersSGR.HTD$Heatprimed),]
+lettersSGR.HTD <- as.data.frame(append(lettersSGR.HTD, list(id = rep(seq(1, 12, by = 1), 2)), after = 0))              
+lettersSGR.HTD <- widen_panel(panel_data(lettersSGR.HTD), separator = "_")
+lettersSGR.HTD <- as.data.frame(append(lettersSGR.HTD,
+              list(Star_1 = "", Star_2 = ifelse(lettersSGR.HTD$.group_1 == lettersSGR.HTD$.group_2, "", "*"))))
+lettersSGR.HTD <- as.data.frame(append(lettersSGR.HTD,
+              list(SGR.max= ifelse(lettersSGR.HTD$emmean_1 > lettersSGR.HTD$emmean_2, lettersSGR.HTD$emmean_1, lettersSGR.HTD$emmean_2))))
+lettersSGR.HTD <- as.data.frame(long_panel(lettersSGR.HTD, prefix = "_", begin = 1, end = 2, label_location = "end", check.varying = FALSE))
+
+## Plot
+ggplot(data = lettersSGR.HTD, aes(y = emmean, x = Date_period, pattern = Heatprimed, pattern_spacing = Heatprimed, 
+                          pattern_density = Heatprimed))+
+  geom_col_pattern(stat = "identity", position = position_dodge(.9), width = .82, 
+                   pattern_colour = 'black', pattern_fill = 'black', colour = 'black', fill = rep(colours,each=6),)+
+  facet_grid(rows=vars(Treatment))+
+  scale_color_manual(values=colours)+
+  scale_pattern_manual(values = c("none", "circle"))+
+  scale_pattern_spacing_manual(values = c(0.99, 0.04))+
+  scale_pattern_density_manual(values = c(0.1,  0.2))+
+  labs(y = expression(paste("SGR (", d^-1,")")), x = "", pattern = "", pattern_spacing = "", pattern_density = "")+
+  scale_y_continuous(expand = c(0, 0), breaks = c(0, 0.01, 0.02), limits = c(-0.002, 0.025))+
+  geom_errorbar(aes(ymin = emmean - (1*SE), ymax = emmean + (1*SE)), width=.1, position=position_dodge(.9))+
+  geom_text(data = lettersSGR.HTD, aes(x=Date_period, y = SGR.max + SE + 0.001, label = Star), 
+            vjust= 0, hjust = 2.6, size = 5.5, fontface = "bold", position=position_dodge(0.9))+
+  theme(
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.background = element_rect(fill = "#FFFFFF"),
+    legend.position="top",
+    panel.grid.major = element_line(colour = "#797979", size = 0.1),
+    panel.grid.minor.y = element_line(colour = "#797979", size = 0.1),
+    #panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(size = 9, face = "bold", vjust = 0.5),
+    axis.title.y = element_text( size = 11, vjust = 1),
+    axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
+    strip.text = element_text(size = 11))
+ggsave("Survival_SGR_Heatprimed x Treatment x Date.tiff", width = 9, height = 12, units = "cm", dpi=1200, compression = "lzw")
+
+```
+
+
+# EV analysis
+## Model
+```{r SGR model}
+
+# Model
+## Random factor to account for non-independence of multiple coral fragments in same nursery Structure
+lme.ev<- lm(EV ~ Treatment*Heatprimed, data = df3.EV.mod) 
+
+# Model validation
+mod <- lme.ev # set model to be validated
+op <- par(mfrow = c(2, 4), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(df3.EV.mod$Treatment, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(df3.EV.mod$Heatprimed, resid(mod, type = "pearson")) # residuals split over Treatment
+abline(0,0)
+plot(fitted(mod) ~ df3.EV.mod$EV) # response data vs fitted
+par(op)
+
+# Model output
+Anova(lme.ev) # Three-way interaction highly significant
+
+```
+## Post hoc and plots
+```{r SGR plots}
+
+# ----- Heatprimed x Treatment two-way interaction (ns) -----
+## Get average values
+mmean.EV.HT <- emmeans(lme.ev, pairwise ~ Heatprimed|Treatment)
+letters.EV.HT <- multcomp::cld(mmean.EV.HT, alpha = 0.05, Letters = letters, order = TRUE) # get CLD
+letters.EV.HT <- letters.EV.HT %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+## Plot
+ggplot(data = letters.EV.HT, aes(y = emmean, x = Treatment, pattern = Heatprimed, pattern_spacing = Heatprimed, 
+                          pattern_density = Heatprimed))+
+  geom_col_pattern(stat = "identity", position = position_dodge(.9), width = .83,
+      pattern_colour = 'black', pattern_fill = 'black', colour = 'black', fill = rep(colours,each=2), size = 1)+
+  scale_color_manual(values=colours)+
+  scale_pattern_manual(values = c("none", "circle"))+
+  scale_pattern_spacing_manual(values = c(0.99, 0.015))+
+  scale_pattern_density_manual(values = c(0.01,  0.2))+
+  labs(y = expression(paste("Change in Ecological Volume (", cm^-3,")")), x = "Treatment",
+       pattern = "", pattern_spacing = "", pattern_density = "")+
+  #scale_y_continuous(expand = c(0, 0), breaks = c(0, 0.25, 0.50, 0.75, 1.0), limits = c(0,1.1))+
+  geom_errorbar(aes(ymin = emmean - (1*SE), ymax = emmean + (1*SE)), width=.1, position=position_dodge(.9))+
+  theme(
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.1),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(size = 9, face = "bold", vjust = 0.5),
+    axis.title.y = element_text( size = 11, vjust = 2),
+    axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
+    strip.text = element_text(size = 11),
+    legend.key.width = unit(0.7, "cm"),
+    legend.key.height =  unit(0.7, "cm"),
+    legend.key.spacing.y = unit(0.1, "cm"))
+ggsave("Survival_EV_Heatprimed by Treatment.png", width = 23, height = 10, units = "cm")
+
+# ----- Treatment only -----
+## Get average values
+mmean.EV.T <- emmeans(lme.ev, pairwise ~ Treatment)
+letters.EV.T <- multcomp::cld(mmean.EV.T, alpha = 0.05, Letters = letters, order = TRUE) # get CLD
+letters.EV.T <- letters.EV.T %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+## Plot
+ggplot(data = letters.EV.T, aes(y = emmean, x = Treatment, fill = Treatment))+
+  geom_col(stat = "identity", position = position_dodge(.9), width = .83)+
+  scale_fill_manual(values=colours)+
+  labs(y = expression(paste("Change in Ecological Volume (", cm^-3,")")), x = "Treatment")+
+  scale_y_continuous(expand = c(0, 0), limits = c(0,499))+
+  geom_errorbar(aes(ymin = emmean - (1*SE), ymax = emmean + (1*SE)), width=.1, position=position_dodge(.9))+
+  geom_text(data = letters.EV.T, aes(x=Treatment, y = emmean + SE + 0.001, label = .group), 
+            vjust= -1, hjust = 0.5, size = 5, fontface = "bold", position=position_dodge(0.9))+
+  theme(
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.1),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(size = 9, face = "bold", vjust = 0.5),
+    axis.title.y = element_text( size = 11, vjust = 2),
+    axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
+    strip.text = element_text(size = 11),
+    legend.key.width = unit(0.7, "cm"),
+    legend.key.height =  unit(0.7, "cm"),
+    legend.key.spacing.y = unit(0.1, "cm"))
+ggsave("Survival_EV_Treatment.png", width = 23, height = 10, units = "cm")
+
+```
 
 # Check packages used
 ```{r}
