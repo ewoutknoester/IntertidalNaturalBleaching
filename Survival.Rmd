@@ -304,7 +304,7 @@ ggplot(data = Sum.THD, aes(x = Date, y = Condition, fill = Treatment, color = Tr
     axis.title.y = element_text( size = 11, vjust = 2),
     axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
     strip.text = element_text(size = 11))
-ggsave("Survival_Condition_Treatment by Heatprimed and Date.png", width = 23, height = 10, units = "cm")
+ggsave("Survival_Condition_Treatment by Heatprimed and Date.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
 
 # ----- Heatprimed x Treatment x Date three-way interaction -----
 ## Get average values
@@ -359,7 +359,7 @@ ggplot(data = Sum.HTD, aes(x = Date, y = Condition))+
     axis.title.y = element_text( size = 11, vjust = 2),
     axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
     strip.text = element_text(size = 11))
-ggsave("Survival_Condition_Heatprimed by Treatment and Date.png", width = 23, height = 12, units = "cm")
+ggsave("Survival_Condition_Heatprimed by Treatment and Date.tiff", width = 23, height = 12, units = "cm", dpi=1200, compression = "lzw")
 
 # ----- Heatprimed x Treatment two-way interaction -----
 ## Get average values
@@ -405,7 +405,7 @@ ggplot(data = Sum.HT, aes(y = Condition, x = Treatment, pattern = Heatprimed, pa
     legend.key.width = unit(0.7, "cm"),
     legend.key.height =  unit(0.7, "cm"),
     legend.key.spacing.y = unit(0.1, "cm"))
-ggsave("Survival_Condition_Heatprimed by Treatment.png", width = 23, height = 10, units = "cm")
+ggsave("Survival_Condition_Heatprimed by Treatment.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
 
 # ----- Treatment x Heatprimed two-way interaction -----
 ## Get average values
@@ -440,8 +440,7 @@ ggplot(data = letters.TH, aes(y = emmean, x = Treatment,  fill = Treatment, patt
     axis.title.y = element_text( size = 11, vjust = 2),
     axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
     strip.text = element_text(size = 11))
-ggsave("Survival_Condition_Treatment by Heatprimed.png", width = 9, height = 10, units = "cm")
-
+ggsave("Survival_Condition_Treatment by Heatprimed.tiff", width = 9, height = 10, units = "cm", dpi=1200, compression = "lzw")
 
 
 
@@ -531,7 +530,7 @@ ggplot(data = lettersSGR.THD, aes(y = emmean, x = Date_period, fill = Treatment,
     legend.key.width = unit(0.5, "cm"),
     legend.key.height =  unit(0.5, "cm"),
     legend.key.spacing.y = unit(0.1, "cm"))
-ggsave("Survival_SGR_Treatment x Heatprimed x Date.png", width = 23, height = 10, units = "cm")
+ggsave("Survival_SGR_Treatment x Heatprimed x Date.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
 
 # ----- Heatprimed x Treatment x Date three-way interaction plot -----
 ## Get average values
@@ -644,7 +643,7 @@ ggplot(data = letters.EV.HT, aes(y = emmean, x = Treatment, pattern = Heatprimed
     legend.key.width = unit(0.7, "cm"),
     legend.key.height =  unit(0.7, "cm"),
     legend.key.spacing.y = unit(0.1, "cm"))
-ggsave("Survival_EV_Heatprimed by Treatment.png", width = 23, height = 10, units = "cm")
+ggsave("Survival_EV_Heatprimed by Treatment.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
 
 # ----- Treatment only -----
 ## Get average values
@@ -674,7 +673,7 @@ ggplot(data = letters.EV.T, aes(y = emmean, x = Treatment, fill = Treatment))+
     legend.key.width = unit(0.7, "cm"),
     legend.key.height =  unit(0.7, "cm"),
     legend.key.spacing.y = unit(0.1, "cm"))
-ggsave("Survival_EV_Treatment.png", width = 23, height = 10, units = "cm")
+ggsave("Survival_EV_Treatment.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
 
 ```
 

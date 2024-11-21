@@ -14,12 +14,8 @@ knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for 
 library("readxl")
 library("tidyverse")
 library("lattice")
-library("rstatix")
 library("ggpubr")
-library("lme4")
 library("fitdistrplus")
-library("lmerTest")
-library("car")
 library("latticeExtra")
 library("dplyr")
 library("lubridate") # Floor dates
@@ -35,7 +31,7 @@ Light was logged by HOBO, but loggers weren't regularly cleaned and got overgrow
 -->
 
 # Data import and organize
-```{r}
+```{r data cleaning}
 
 # NOAA
 # load data NOAA (taken from: https://coralreefwatch.noaa.gov/product/vs/data/kenya.txt)
@@ -48,7 +44,7 @@ names(NOAA.1) <- c("Date", "SST.min", "SST.max", "DHW")
 NOAA.1 <- as.data.frame(append(NOAA.1, list(SST.avg = (NOAA.1$SST.min + NOAA.1$SST.max)/2), after = 3))
 
 # Select subset with relevant dates
-NOAA.2 <- NOAA.1[NOAA.1$Date >= "2020-01-01" & NOAA.1$Date <= "2020-09-12", ]
+NOAA.2 <- NOAA.1[NOAA.1$Date >= "2019-11-15" & NOAA.1$Date <= "2020-09-12", ]
 
 # HOBO
 # Load data HOBO logger
@@ -80,21 +76,26 @@ Temp <- plyr::join(NOAA.2, HOBO.avg, by = "Date")
 # Separate data frames for HOBO Min and Max for Intertidal and Subtidal
 HOBO.int <- HOBO.2[HOBO.2$Treatment == "Intertidal",]
 HOBO.sub <- HOBO.2[HOBO.2$Treatment == "Subtidal",]
+
 ```
 
 # Plots
-```{r}
+```{r plots}
+
 # Averages NOAA and HOBO + DHW
 # Select dates for plotting
-Temp.plot <- Temp[Temp$Date >= "2020-02-01" & Temp$Date <= "2020-09-12", ]
+Temp.plot <- Temp[Temp$Date >= "2019-11-15" & Temp$Date <= "2020-09-12", ]
 Temp.plot$MMM <- 28.7719 + 1 # Set average monthly maximum mean +1 (= bleaching threshold)
 
-# Plotting temperatures
+library(lattice)
+library(latticeExtra)
+
+# Plot in XYPLOT
 Temp_graph <- xyplot(data = Temp.plot, SST.max + INT.avg + SUB.avg + MMM ~ Date, 
                      par.settings = list(superpose.line = list(col = c("black", "red"))),
                      col = c("green3", "turquoise", "dodgerblue3", "yellow", "red"),
                      key = list(corner = c(1, 0.95),
-                     text = list(c("Intertidal (avg)", "Subtidal (avg)", "NOAA (max)", "MMM + 1", "DHW")),
+                     text = list(c("Temp Int (avg)", "Temp Sub (avg)", "Temp NOAA (max)", "Temp MMM + 1", "DHW")),
                      lines = list(lty = c("solid", "solid", "solid", "twodash", "twodash"), lwd = 3,
                                   col = c("turquoise", "dodgerblue3", "green3", "yellow", "red"))),
                      type = c("l", "g"), # Set type of graph: line graph
@@ -106,7 +107,7 @@ DHW_graph <- xyplot(DHW ~ Date, data = Temp.plot, superpose = T, col="red", lwd 
                     xlab = "Date", ylab = "Degree Heating Week (DHW)")
 
 # Combine Temp and DHW
-png("Temp and DHW.png", width = 23, height = 12, units = "cm", res = 200)
+tiff("Temp and DHW.tiff", width = 23, height = 12, units = "cm", res=1200, compression = "lzw")
 doubleYScale(Temp_graph, DHW_graph, add.ylab2 = TRUE)
 dev.off()
 
@@ -117,7 +118,7 @@ trellis.par.set(axis.text = list(cex = 1, fontface = "bold", col="#000000"))
 trellis.par.set(par.xlab.text = list(cex = 1, fontface = "plain", col="#000000"))
 
 # Plotting temperatures
-png("Min and max.png", width = 23, height = 12, units = "cm", res = 200)
+tiff("Min and max.tiff", width = 23, height = 12, units = "cm", res=1200, compression = "lzw")
 xyplot(HOBO.max + HOBO.avg + HOBO.min ~ Date | Treatment, data = HOBO.2,
               col=c("red", "gold2", "dodgerblue"), lwd = c(2, 3, 2), 
               key = list(corner = c(1, 0.9), # Position legend
@@ -127,5 +128,52 @@ xyplot(HOBO.max + HOBO.avg + HOBO.min ~ Date | Treatment, data = HOBO.2,
               xlab="Date", ylab = list(expression("Temperature " ( degree~C)), cex = 1),
               ylim=c(23, 36), layout=c(1,2),  scales=list(y=list(relation="free")))
 dev.off()
+
+```
+
+```{r}
+
+library(lattice)
+library(latticeExtra)
+
+# Define the date for the vertical line
+line_date <- as.Date("2023-12-24")
+
+# Create the temperature plot without any shaded area or custom panels
+Temp_graph <- xyplot(SST.max + INT.avg + SUB.avg + MMM ~ Date, 
+                     data = Temp.plot, 
+                     par.settings = list(superpose.line = list(col = c("green3", "turquoise", "dodgerblue3", "yellow"))),
+                     key = list(corner = c(1, 0.95),
+                     text = list(c("Temp Int (avg)", "Temp Sub (avg)", "Temp NOAA (max)", "Temp MMM + 1")),
+                     lines = list(lty = c("solid", "solid", "solid", "twodash"), lwd = 3,
+                                  col = c("turquoise", "dodgerblue3", "green3", "yellow"))),
+                     type = c("l", "g"), 
+                     lty = c("solid", "solid", "solid", "twodash"), lwd = c(2, 2.5, 2.5),
+                     xlab = "Date", ylab = expression("Temperature " ( degree~C)))
+
+# Create the DHW plot
+DHW_graph <- xyplot(DHW ~ Date, data = Temp.plot, col = "red", lwd = 2, type = "l", lty = 5,
+                    xlab = "Date", ylab = "Degree Heating Week (DHW)",
+                    panel.abline(h = 0, col = "red", lty = 2, lwd = 2)
+                    )
+
+# Combine Temp and DHW plots
+combined_graph <- doubleYScale(Temp_graph, DHW_graph, add.ylab2 = TRUE)
+
+# Add the vertical line at the specified date
+final_graph <- update(combined_graph,
+                      panel = function(...) {
+                          # Draw the vertical line
+                          panel.abline(h = 25, col = "red", lty = 2, lwd = 2)
+                          # Call the original panel function to draw the plot
+                          panel.xyplot(...)
+                      })
+
+# Save the final combined plot as PNG
+png("Temp_and_DHW.png", width = 23, height = 12, units = "cm", res = 200)
+print(final_graph)
+dev.off()
+
+
 ```
 

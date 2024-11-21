@@ -309,7 +309,7 @@ ggplot(data=sum.all.log4.line, aes(Date, y = Brightness, fill = Treatment)) +
     legend.key.width = unit(0.5, "cm"),
     legend.key.height =  unit(0.5, "cm"),
     legend.key.spacing.y = unit(0.35, "cm"))
-ggsave("Bleaching_Treatment x Primed x Date.png", width = 18, height = 18, units = "cm")
+ggsave("Bleaching_Treatment x Primed x Date.tiff", width = 18, height = 18, units = "cm", dpi=1200, compression = "lzw")
 
 # ---- HEATPRIMED x Treatment x Date ----
 ## Get average values, SD and SE of Bleaching split per Date and Treatment
@@ -386,7 +386,7 @@ ggplot(data=sum.HTD, aes(Date, y = Brightness, fill = Treatment)) +
     axis.title.y = element_text( size = 11, vjust = 2),
     axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
     strip.text = element_text(size = 11))
-ggsave("Bleaching_Heatprimed x Treatment x Date.png", width = 18, height = 18, units = "cm")
+ggsave("Bleaching_Heatprimed x Treatment x Date.tiff", width = 18, height = 18, units = "cm", dpi=1200, compression = "lzw")
 
 # ----- GENOTYPE x Heatprimed x Treatment three-way interaction -----
 ## Get averages and stats
@@ -406,7 +406,7 @@ ggplot(data = letters.GHT, aes(y = response, x = Treatment, fill = Position, pat
   scale_pattern_manual(values = c("none", "circle"))+
   scale_pattern_spacing_manual(values = c(0.99, 0.02))+
   scale_pattern_density_manual(values = c(0.1,  0.2))+
-  labs(y = expression(paste("SGR (", d^-1,")")), x = "", fill = "Genotype")+
+  labs(y = "Brightness (bpp)", x = "Treatment", fill = "Genotype")+
   #scale_y_continuous(expand = c(0, 0), limits = c(-0.002, 0.019))+
   geom_errorbar(aes(ymin = response - (1*SE), ymax = response + (1*SE)), width=.1, position=position_dodge(.9))+
   geom_text(data = letters.GHT, aes(x = Treatment, y = response + 1*SE, vjust = -0.4, label = .group), 
@@ -542,12 +542,13 @@ ggplot(df5.complete, aes(x = `Brightness (priming)`, y = `Brightness (natural bl
   geom_hline(yintercept=150, linetype="dotted", color = "#f38aff", size = 0.75)+
   geom_vline(xintercept=90, linetype="twodash", color = "#f38aff", size = 0.55)+
   geom_vline(xintercept=150, linetype="dotted", color = "#f38aff", size = 0.75)+
-  scale_y_continuous(expand = c(0,0), limits=c(0, 200))+
-  scale_x_continuous(expand = c(0,0), limits=c(0, 200))+
-  geom_smooth(  method = "lm", se = F, size = 1.2, fullrange = TRUE)+ 
+  scale_y_continuous(expand = c(0,0), limits=c(0, 210))+
+  scale_x_continuous(expand = c(0,0), limits=c(0, 210))+
+  geom_smooth(  method = "lm", se = F, size = 1.2, fullrange = F)+ 
+  labs(x = "Brightness priming (bpp)", y = "Brightness natural heatwave (bpp)")+
   theme(
     text = element_text(size = 16),
-    axis.title.x = element_text(color = "black", size = 14, vjust = 2),
+    axis.title.x = element_text(color = "black", size = 14, vjust = 0),
     axis.text.x = element_text(angle = 0, size = 14, face = "bold", vjust=0),
     axis.title.y = element_text(color = "black", size = 14, vjust = 2),
     axis.text.y = element_text(angle = 0, size = 14, face = "bold", vjust=0),
@@ -559,6 +560,71 @@ ggplot(df5.complete, aes(x = `Brightness (priming)`, y = `Brightness (natural bl
     panel.grid.minor = element_blank(),
     panel.grid.major = element_line(colour = "#FCFCFC", size = 0.1))
 ggsave("Bleaching_Correlation primed x natural bleaching.tiff", width = 18, height = 13, units = "cm", dpi=1200, compression = "lzw")
+
+## Plot averages of bleaching response during priming
+df5.complete <- dplyr::select(df5.complete, -c("Structure", "Position", "finder" ))
+names(df5.complete) <- c("Treatment", "Brightness_1", "Brightness_2")
+df5.complete <- as.data.frame(long_panel(df5.complete, prefix = "_", begin = 1, end = 2, label_location = "end", check.varying = FALSE))
+df5.complete$wave <- ifelse(df5.complete$wave == 1, "Priming", "Heatwave")
+df5.complete <- dplyr::select(df5.complete, -c("id" ))
+names(df5.complete) <- c("Time", "Treatment", "Brightness.max")
+df5.complete$Treatment <- as.factor(df5.complete$Treatment)
+df5.complete$Time <- as.factor(df5.complete$Time)
+
+### Model  
+Model.bleach.time <- lm(log10(Brightness.max) ~ Treatment*Time, data = df5.complete)
+
+anova(Model.bleach.time) # Three-way interaction highly significant also for Genotype (Position)
+
+### Residuals
+mod <- Model.bleach.time # set model to be validated
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(df5.complete$Treatment, resid(mod, type = "pearson")) # residuals split over Treatment
+abline(0,0)
+plot(df5.complete$Time, resid(mod, type = "pearson")) # residuals split over Heatprimed
+abline(0,0)
+plot(fitted(mod) ~ log10(df5.complete$Brightness.max)) # response (log) data vs fitted (log)
+par(op)
+
+### Posthoc
+ph.bleach.time <- emmeans(Model.bleach.time, specs = pairwise ~ Treatment|Time, adjust = "tukey", type = "response")
+letters.bleach.time <- multcomp::cld(ph.bleach.time$emmeans, alpha = 0.05, Letters = letters) # get CLD
+letters.bleach.time <- letters.bleach.time %>% mutate(.group = str_squish(.group)) # remove white spaces
+
+### Plot
+ggplot(data = letters.bleach.time, aes(y = response, x = Treatment,  fill = Treatment, pattern = Time, pattern_spacing = Time, 
+                          pattern_density = Time))+
+    geom_hline(yintercept=90, linetype="twodash", color = "#f38aff", size = 0.55)+
+  geom_hline(yintercept=150, linetype="dotted", color = "#f38aff", size = 0.75)+
+  geom_col_pattern(stat = "identity", position = position_dodge(.9), width = .85,
+      pattern_colour = 'black', pattern_fill = 'black', colour = 'black')+
+  scale_fill_manual(values=colours)+
+  facet_grid(rows=vars(Time))+
+  scale_pattern_manual(values = c("none", "circle"))+
+  scale_pattern_spacing_manual(values = c(0.99, 0.03))+
+  scale_pattern_density_manual(values = c(0.01,  0.2))+
+  labs(y = "Brightness (bpp)", x = "Treatment", pattern = "", pattern_spacing = "", pattern_density = "")+
+  scale_y_continuous(expand = c(0, 0), breaks = c(40, 80, 120, 160), limits = c(0, 165))+
+  geom_errorbar(aes(ymin = response - (1*SE), ymax = response + (1*SE)), width=.1, position=position_dodge(.9))+
+  geom_text(data = letters.bleach.time, aes(x = Treatment, y = response + 1*SE, vjust = -1, label = .group), 
+            size = 4.5, fontface = "bold", position=position_dodge(.9))+
+  theme(
+    panel.spacing.y = unit(2, "lines"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.background = element_rect(fill = "#FFFFFF"),
+    legend.position="none",
+    panel.grid.major = element_line(colour = "#797979", size = 0.1),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(size = 9, face = "bold", vjust = 0.5),
+    axis.title.y = element_text( size = 11, vjust = 2),
+    axis.text.y = element_text(size = 9, face = "bold", vjust = 0.4),
+    strip.text = element_text(size = 11))
+ggsave("Bleaching_Brightness by Priming vs Natural heatwave.tiff", width = 9, height = 10, units = "cm", dpi=1200, compression = "lzw")
 
 ```
 
